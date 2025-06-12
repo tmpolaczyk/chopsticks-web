@@ -11,9 +11,11 @@ import Preimages from './Preimages'
 import Referenda from './Referenda'
 import Settings from './Settings'
 import StateCall from './StateCall'
+import WasmOptions from './WasmOptions'
 
 function App() {
   const [api, setApi] = useState<Api>()
+  const [wasmOverride, setWasmOverride] = useState<File>()
   const [endpoint, setEndpoint] = useState<string>()
   const [activeKey, setActiveKey] = useState<string[]>(['settings'])
   const [preimage, setPreimage] = useState<{ hex: string; origin: any }>()
@@ -35,6 +37,10 @@ function App() {
     [activeKey],
   )
 
+  const onFileSelect = useCallback((file: File) => {
+    setWasmOverride(file)
+  }, [])
+
   const onChangeActiveKey = useCallback((activeKey: string | string[]) => {
     setActiveKey(Array.isArray(activeKey) ? activeKey : [activeKey])
   }, [])
@@ -44,6 +50,11 @@ function App() {
       key: 'settings',
       label: 'Settings',
       children: <Settings onConnect={onConnect} />,
+    },
+    {
+      key: 'wasm-override',
+      label: 'WasmOptions',
+      children: <WasmOptions onFileSelect={onFileSelect} api={api} />,
     },
     {
       key: 'preimages',
@@ -137,7 +148,7 @@ function App() {
     {
       key: 'dryrun-block',
       label: 'Dry Run Block',
-      children: api && endpoint ? <DryRunBlock api={api} endpoint={endpoint} /> : <Spin spinning={true} />,
+      children: api && endpoint ? <DryRunBlock api={api} endpoint={endpoint} wasmOverride={wasmOverride} /> : <Spin spinning={true} />,
     },
     {
       key: 'state-call',

@@ -19,6 +19,7 @@
     "@polkadot/util": "13.4.3",
     "@rehooks/local-storage": "^2.4.5",
     "antd": "^5.24.4",
+    "bunx": "^0.1.0",
     "jsondiffpatch": "0.6.0",
     "lodash": "^4.17.21",
     "react": "^18.3.1",
@@ -43,5 +44,8 @@
   },
   "lint-staged": {
     "*.{js,ts,cjs,mjs,d.cts,d.mts,jsx,tsx,json,jsonc}": ["biome check --write --no-errors-on-unmatched"]
+  },
+  "volta": {
+    "node": "22.16.0"
   }
 }

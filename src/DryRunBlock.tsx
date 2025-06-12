@@ -11,9 +11,10 @@ import type { Api } from './types'
 export type DryRunBlockProps = {
   api: Api
   endpoint: string
+  wasmOverride: File
 }
 
-const DryRunBlock: React.FC<DryRunBlockProps> = ({ api, endpoint }) => {
+const DryRunBlock: React.FC<DryRunBlockProps> = ({ api, endpoint, wasmOverride }) => {
   const [form] = Form.useForm()
   const [message, setMessage] = useState<string>()
   const [isLoading, setIsLoading] = useState(false)
@@ -35,6 +36,28 @@ const DryRunBlock: React.FC<DryRunBlockProps> = ({ api, endpoint }) => {
         db: new IdbDatabase('cache'),
         runtimeLogLevel: 5,
       })
+
+      if (wasmOverride) {
+        // Helper: convert Uint8Array to hex string
+        function u8aToHex(u8a: Uint8Array): string {
+          return `0x${Array.from(u8a)
+            .map((b) => b.toString(16).padStart(2, '0'))
+            .join('')}`
+        }
+        console.log('Installing wasm override', wasmOverride)
+        const buffer = new Uint8Array(await wasmOverride.arrayBuffer())
+        console.log('buffer[0..10]:', JSON.stringify(buffer.slice(0, 10)))
+        const wasmHex = u8aToHex(buffer)
+        console.log('wasmHex[0..10]:', JSON.stringify(wasmHex.slice(0, 10)))
+        const at = null
+        if (at) {
+          const block = await chain.getBlock(at)
+          if (!block) throw new Error(`Cannot find block ${at}`)
+          block.setWasm(wasmHex as HexString)
+        } else {
+          chain.head.setWasm(wasmHex as HexString)
+        }
+      }
 
       setMessage('Chopsticks instance created')
 
@@ -90,7 +113,7 @@ const DryRunBlock: React.FC<DryRunBlockProps> = ({ api, endpoint }) => {
 
       setIsLoading(false)
     },
-    [api.query.system, endpoint],
+    [api.query.system, endpoint, wasmOverride],
   )
 
   return (
