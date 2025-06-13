@@ -86,6 +86,9 @@ const DryRunBlock: React.FC<DryRunBlockProps> = ({ api, endpoint, wasmOverride }
 
           setMessage('Dry run completed. Preparing diff...')
 
+          // TODO: this should work?
+          console.log('got block logs?', block.runtimeLogs)
+
           const diff = await block.storageDiff()
 
           return await decodeStorageDiff(chain.head, Object.entries(diff) as any)

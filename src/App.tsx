@@ -4,6 +4,7 @@ import { useCallback, useState } from 'react'
 import type { Api } from './types'
 
 import Collectives from './Collectives'
+import ConsoleTerminal from './ConsoleTerminal'
 import Democracy from './Democracy'
 import DryRun from './DryRun'
 import DryRunBlock from './DryRunBlock'
@@ -24,6 +25,40 @@ function App() {
     setApi(api)
     setEndpoint(endpoint)
   }, [])
+
+  // This is an attempt to create the chopsticks wasm worker once the api is available
+  // Very buggy so avoid using if possible.
+  /*
+  const didRunRef = useRef(false);
+  const asyncAlive = useRef(null);
+  const startApi = useEffect(() => {
+  console.log("startApi", api, "endpoint", endpoint)
+    if (didRunRef.current) { return; }
+    // init wasm worker once
+    if (api && api?.query.system) {
+          didRunRef.current = true;
+          console.log("api and system truthy");
+    asyncAlive.current = (async () => { 
+          console.log("inside async func");
+	    const blockNumber = ((await api.query.system.number()) as any).toNumber()
+	    const chain = await setup({
+		endpoint,
+		block: blockNumber,
+		mockSignatureHost: true,
+		db: new IdbDatabase('cache'),
+		runtimeLogLevel: 5,
+	    })
+	    const rootOrigin = { system: 'Root' }
+	    const preimage = 0x0101
+	    const res = await chain.dryRunExtrinsic({
+          	call: preimage,
+          	address: rootOrigin,
+        	})
+	});
+	(asyncAlive.current)();
+    }
+  }, [api, endpoint, api?.query.system])
+  */
 
   const onDryRunPreimage = useCallback(
     (hex: string, origin?: any) => {
@@ -154,6 +189,11 @@ function App() {
       key: 'state-call',
       label: 'State Call',
       children: api && endpoint ? <StateCall api={api} endpoint={endpoint} /> : <Spin spinning={true} />,
+    },
+    {
+      key: 'console',
+      label: 'Console',
+      children: <ConsoleTerminal />,
     },
   ]
 
