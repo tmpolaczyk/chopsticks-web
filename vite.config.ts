@@ -5,4 +5,8 @@ import { defineConfig } from 'vite'
 export default defineConfig({
   plugins: [react()],
   base: '/chopsticks-web',
+  define: {
+    'process.env.LOG_LEVEL': JSON.stringify('trace'),
+    'process.env.VERBOSE_LOG': JSON.stringify('true'),
+  },
 })
