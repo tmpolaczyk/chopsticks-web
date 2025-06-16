@@ -13,8 +13,8 @@
     "prepare": "husky"
   },
   "dependencies": {
-    "@acala-network/chopsticks-core": "1.0.3",
-    "@acala-network/chopsticks-db": "1.0.3",
+    "@acala-network/chopsticks-core": "1.0.6",
+    "@acala-network/chopsticks-db": "1.0.6",
     "@polkadot/api": "15.8.1",
     "@polkadot/util": "13.4.3",
     "@rehooks/local-storage": "^2.4.5",
