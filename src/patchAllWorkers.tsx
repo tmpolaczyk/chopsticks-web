@@ -5,6 +5,7 @@
 
 // Cache for preloaded worker script sources
 const scriptCache: Record<string, string> = {}
+window.scriptCache = scriptCache
 
 // Expose a preload function to fetch and cache worker scripts ahead of time
 declare global {
@@ -13,6 +14,16 @@ declare global {
     populateCache(): Promise<void>
   }
 }
+
+window.preloadWorkerScript = async (url: string) => {
+  if (!scriptCache[url]) {
+    const res = await fetch(url)
+    const code = await res.text()
+    scriptCache[url] = code
+    console.info(`preloadWorkerScript: cached ${url}`)
+  }
+}
+/*
 window.preloadWorkerScript = async (url: string) => {
   if (!scriptCache[url]) {
     const res = await fetch(url)
@@ -34,10 +45,11 @@ window.preloadWorkerScript = async (url: string) => {
     }
   }
 }
+*/
 
 window.populateCache = async () => {
   // 1) Compute the exact worker URL
-  const workerUrl = new URL('browser-wasm-executor.js', import.meta.url).toString()
+  const workerUrl = new URL('../node_modules/.vite/deps/browser-wasm-executor.js?worker_file&type=module', import.meta.url).toString()
 
   // 2) Preload it into the patchAllWorkers cache
   await window.preloadWorkerScript(workerUrl)
@@ -68,6 +80,7 @@ let globalWorkerId = 1
     super(blobUrl, options)
     this.__workerId = workerId
 
+    /*
     // main-thread handlers for any uncaught or message errors
     this.onerror = (event: ErrorEvent) => {
       console.error(
@@ -81,6 +94,7 @@ let globalWorkerId = 1
       )
     }
     this.onmessageerror = (e) => console.error(`Worker#${workerId} message error:`, e)
+    */
 
     // Relay console messages from this worker to window with workerId tag
     this.addEventListener('message', (e: MessageEvent) => {
@@ -167,7 +181,8 @@ function createPatchedBlobURL(realScriptUrl: string): string {
     `
 
   // build a tiny blob that first runs console-patch, then loads the real script
-  const blob = new Blob([executorCode ? cachedBody : loaderBody], { type: 'text/javascript' })
+  //const blob = new Blob([executorCode ? cachedBody : loaderBody], { type: 'text/javascript' })
+  const blob = new Blob([cachedBody], { type: 'text/javascript' })
 
   return URL.createObjectURL(blob)
 }
