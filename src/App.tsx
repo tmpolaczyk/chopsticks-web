@@ -10,6 +10,7 @@ import DryRun from './DryRun'
 import DryRunBlock from './DryRunBlock'
 import Preimages from './Preimages'
 import Referenda from './Referenda'
+import ReplayBlock from './ReplayBlock'
 import Settings from './Settings'
 import StateCall from './StateCall'
 import WasmOptions from './WasmOptions'
@@ -184,6 +185,11 @@ function App() {
       key: 'dryrun-block',
       label: 'Dry Run Block',
       children: api && endpoint ? <DryRunBlock api={api} endpoint={endpoint} wasmOverride={wasmOverride} /> : <Spin spinning={true} />,
+    },
+    {
+      key: 'replay-block',
+      label: 'Replay Block',
+      children: api && endpoint ? <ReplayBlock api={api} endpoint={endpoint} wasmOverride={wasmOverride} /> : <Spin spinning={true} />,
     },
     {
       key: 'state-call',
