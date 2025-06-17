@@ -4,6 +4,30 @@ import { useEffect, useRef } from 'react'
 import '@xterm/xterm/css/xterm.css'
 import { FitAddon } from '@xterm/addon-fit'
 
+// 1) Declare your handler
+let writeEntry = null
+const handler = (e: MessageEvent) => {
+  if (writeEntry && e.data?.type === 'console') {
+    // TODO: if writeEntry == null, maybe buffer logs somewhere?
+    writeEntry(e.data.method, e.data.text)
+  }
+}
+
+// 2) Monkey-patch window.Worker (or globalThis.Worker)
+{
+  const NativeWorker = window.Worker
+  window.Worker = class WorkerWrapped extends NativeWorker {
+    constructor(...args) {
+      super(...args)
+      // every time any code does `new Worker(...)`—including getWorker’s startWorker—
+      // your handler gets wired up automatically
+      this.addEventListener('message', handler)
+    }
+  }
+  // keep the prototype chain intact so `instanceof Worker` still works
+  //window.Worker.prototype = NativeWorker.prototype;
+}
+
 const ConsoleTerminal: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -23,7 +47,7 @@ const ConsoleTerminal: React.FC = () => {
     })
 
     // Write each console entry into the terminal
-    const writeEntry = (method: string, text: string) => {
+    const writeEntry2 = (method: string, text: string) => {
       const prefix = ''
       /*switch (method) {
         case 'info':  prefix = '\x1b[34m[INFO]\x1b[0m ';  break;
@@ -34,6 +58,7 @@ const ConsoleTerminal: React.FC = () => {
       }*/
       term.writeln(prefix + text)
     }
+    writeEntry = writeEntry2
 
     // Listen for global console messages
     const handler = (e: MessageEvent) => {
@@ -41,12 +66,11 @@ const ConsoleTerminal: React.FC = () => {
         writeEntry(e.data.method, e.data.text)
       }
     }
-    window.addEventListener('message', handler)
 
     // Cleanup
     return () => {
-      window.removeEventListener('message', handler)
       term.dispose()
+      writeEntry = null
     }
   }, [])
 
