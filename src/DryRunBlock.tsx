@@ -44,6 +44,8 @@ const DryRunBlock: React.FC<DryRunBlockProps> = ({ api, endpoint, wasmOverride }
             .map((b) => b.toString(16).padStart(2, '0'))
             .join('')}`
         }
+        // TODO: using the downloaded wasm for wasm override doesnt work, check why
+        // probably download is broken
         console.log('Installing wasm override', wasmOverride)
         const buffer = new Uint8Array(await wasmOverride.arrayBuffer())
         console.log('buffer[0..10]:', JSON.stringify(buffer.slice(0, 10)))
@@ -85,9 +87,6 @@ const DryRunBlock: React.FC<DryRunBlockProps> = ({ api, endpoint, wasmOverride }
           })
 
           setMessage('Dry run completed. Preparing diff...')
-
-          // TODO: this should work?
-          console.log('got block logs?', block.runtimeLogs)
 
           const diff = await block.storageDiff()
 
