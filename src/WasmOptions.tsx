@@ -5,23 +5,6 @@ import React, { useCallback, useState } from 'react'
 
 import type { Api } from './types'
 
-const endpoints = [
-  'wss://rpc.polkadot.io',
-  'wss://polkadot-collectives-rpc.polkadot.io',
-  'wss://kusama-rpc.polkadot.io',
-  'wss://acala-rpc.aca-api.network',
-  'wss://karura-rpc.aca-api.network',
-]
-
-const blockHeightOptions = [
-  {
-    value: 'latest',
-  },
-  {
-    value: 'last',
-  },
-]
-
 export type WasmOptionsProps = {
   /** Called when the user selects a valid .wasm file */
   onFileSelect: (file: File) => void

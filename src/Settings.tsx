@@ -15,6 +15,26 @@ const endpoints = [
   'wss://karura-rpc.aca-api.network',
 ]
 
+// Tanssi endpoints from
+// https://github.com/moondance-labs/tanssi-chain-visualization/blob/main/src/components/Dashboard.tsx
+const parachainUrls = [
+  'https://stagebox.tanssi-dev.network',
+  'https://fraa-flashbox-rpc.a.stagenet.tanssi.network',
+  'https://dancebox.tanssi-api.network',
+]
+
+const relaychainUrls = [
+  'https://stagelight.tanssi-dev.network',
+  'https://dancelight.tanssi-api.network',
+  'https://moonlight.tanssi-dev.network',
+  'https://tanssi.tanssi-mainnet.network',
+]
+
+// 1. combine both arrays
+// 2. map each "https://" → "wss://"
+// 3. splice into `endpoints` at position 0
+endpoints.splice(0, 0, ...[...relaychainUrls, ...parachainUrls].map((url) => url.replace(/^https?:\/\//, 'wss://')))
+
 const blockHeightOptions = [
   {
     value: 'latest',
