@@ -1,4 +1,4 @@
-import { ChopsticksProvider, setup } from '@acala-network/chopsticks-core'
+import { Blockchain, ChopsticksProvider, processOptions } from '@acala-network/chopsticks-core'
 import { IdbDatabase } from '@acala-network/chopsticks-db/browser'
 import { ApiPromise } from '@polkadot/api'
 import { Button, Divider, Form, Input, Space, Spin, Typography } from 'antd'
@@ -12,6 +12,47 @@ export type ReplayBlockProps = {
   api: Api
   endpoint: string
   wasmOverride: File
+}
+
+// Custom setup with no inherents, because when we replay a block we can use the existing inherents, no need to create new ones.
+// Must stay updated to match this file:
+// https://github.com/AcalaNetwork/chopsticks/blob/5fb31092a879c1a1ac712b7b24bd9fa91f0bee53/packages/core/src/setup.ts#L80
+export const setup2 = async (options: SetupOptions) => {
+  const { api, blockHash, ...opts } = await processOptions(options)
+
+  const header = await api.getHeader(blockHash)
+  if (!header) {
+    throw new Error(`Cannot find header for ${blockHash}`)
+  }
+
+  // This magic line will disable automatic inherents, so we can just use the real inherents read from the block
+  const inherentProviders = []
+
+  const chain = new Blockchain({
+    api,
+    buildBlockMode: opts.buildBlockMode,
+    inherentProviders,
+    db: opts.db,
+    header: {
+      hash: blockHash as HexString,
+      number: Number(header.number),
+    },
+    mockSignatureHost: opts.mockSignatureHost,
+    allowUnresolvedImports: opts.allowUnresolvedImports,
+    runtimeLogLevel: opts.runtimeLogLevel,
+    registeredTypes: opts.registeredTypes || {},
+    offchainWorker: opts.offchainWorker,
+    maxMemoryBlockCount: opts.maxMemoryBlockCount,
+    processQueuedMessages: opts.processQueuedMessages,
+    saveBlocks: opts.saveBlocks,
+  })
+
+  if (opts.genesis) {
+    // build 1st block
+    await chain.newBlock()
+  }
+
+  return chain
 }
 
 const ReplayBlock: React.FC<ReplayBlockProps> = ({ api, endpoint, wasmOverride }) => {
@@ -29,9 +70,35 @@ const ReplayBlock: React.FC<ReplayBlockProps> = ({ api, endpoint, wasmOverride }
       setMessage('Starting')
 
       const blockNumber = ((await api.query.system.number()) as any).toNumber()
-      const chain = await setup({
+      let chain = await setup2({
         endpoint,
         block: blockNumber,
+        mockSignatureHost: true,
+        db: new IdbDatabase('cache'),
+        runtimeLogLevel: 5,
+      })
+
+      /*let chain = null;
+
+      const oldExtrinsics = await api.getBlock(blockNumber).then((b) => {
+        if (!b) {
+          throw new Error(`Block ${this.hash} not found`)
+        }
+        return b.block.extrinsics
+      })
+      */
+
+      const oldExtrinsics = await chain.head.extrinsics
+
+      //console.log("replay block. num extrinsics:", oldExtrinsics.length, oldExtrinsics);
+      console.log('replay block. num extrinsics:', oldExtrinsics.length, oldExtrinsics)
+
+      // Restart chain starting from previous block, to see storage diff caused by new block
+      // TODO: even this doesnt work. Maybe try to only create one chain with blockNumber-1, and get extrinsics using
+      // api, not chain
+      chain = await setup2({
+        endpoint,
+        block: blockNumber - 1,
         mockSignatureHost: true,
         db: new IdbDatabase('cache'),
         runtimeLogLevel: 5,
@@ -79,8 +146,12 @@ const ReplayBlock: React.FC<ReplayBlockProps> = ({ api, endpoint, wasmOverride }
             })
           }
 
+          //const nextBlock = await chain.getBlock(blockNumber)
+          //if (!nextBlock) throw new Error(`Cannot find block ${blockNumber}`)
+
+          //chain.#inherentProviders = [];
           const block = await chain.newBlock({
-            transactions: extrinsics,
+            transactions: oldExtrinsics,
             downwardMessages: dmp,
             upwardMessages: umpMessages,
             horizontalMessages: hrmpMessages,
