@@ -5,6 +5,7 @@ import { ApiPromise } from '@polkadot/api'
 import { Button, Divider, Form, Input, Space, Spin, Typography } from 'antd'
 import React, { useCallback, useState } from 'react'
 
+import { nanoid } from 'nanoid'
 import DiffViewer from './DiffViewer'
 import { decodeStorageDiff } from './helper'
 import type { Api } from './types'
@@ -15,30 +16,68 @@ export type ReplayBlockProps = {
   wasmOverride: File
 }
 
+type ExtrinsicInfo = {
+  hex: string
+  id: string
+}
+
 const ReplayBlock: React.FC<ReplayBlockProps> = ({ api, endpoint, wasmOverride }) => {
   const [form] = Form.useForm()
   const [message, setMessage] = useState<string>()
   const [isLoading, setIsLoading] = useState(false)
   const [storageDiff, setStorageDiff] = useState<Awaited<ReturnType<typeof decodeStorageDiff>>>()
+  const [blockInfo, setBlockInfo] = useState<{ number: number; hash: string } | null>(null)
+  const [blockExtrinsics, setBlockExtrinsics] = useState<ExtrinsicInfo[] | null>(null)
 
   const onFinish = useCallback(
     async (values: any) => {
-      const { extrinsics, dmp, ump, hrmp } = values
+      const { extrinsics, dmp, ump, hrmp, blockNumber } = values
 
       setIsLoading(true)
       setStorageDiff(undefined)
       setMessage('Starting')
+      setBlockInfo(null)
+      setBlockExtrinsics(null)
 
-      const blockNumber = ((await api.query.system.number()) as any).toNumber()
+      // Use user-provided block number or fallback to latest
+      let targetBlock: any
+      if (blockNumber === 'latest') {
+        const bn = ((await api.query.system.number()) as any).toNumber()
+        targetBlock = bn
+      } else {
+        targetBlock = blockNumber
+      }
+
       const chain = await setup({
         endpoint,
-        block: blockNumber,
+        block: targetBlock,
         mockSignatureHost: true,
         db: new IdbDatabase('cache'),
         runtimeLogLevel: 5,
       })
 
       setMessage('Chopsticks instance created')
+
+      const header = await chain.head.header
+      const block = chain.head
+
+      // set number & hash
+      setBlockInfo({
+        number: header.number.toNumber(),
+        hash: header.hash.toHex(),
+      })
+
+      // fetch and stringify extrinsics
+      const rawExts = await block.extrinsics
+      setBlockExtrinsics(
+        rawExts.map((ext) => {
+          // each ext may already be hex-string or offer toHex()
+          const hex = typeof ext === 'string' ? ext : ext.toHex()
+          const id = nanoid()
+
+          return { id, hex }
+        }),
+      )
 
       const dryRun = async () => {
         try {
@@ -143,7 +182,11 @@ const ReplayBlock: React.FC<ReplayBlockProps> = ({ api, endpoint, wasmOverride }
 
   return (
     <div>
-      <Form form={form} onFinish={onFinish} disabled={isLoading}>
+      <Form form={form} onFinish={onFinish} disabled={isLoading} initialValues={{ blockNumber: 'latest' }}>
+        <Form.Item label="Block Number" name="blockNumber" tooltip="Enter block to replay (defaults to latest)">
+          <Input style={{ width: '100%' }} />
+        </Form.Item>
+
         <Form.Item label="Extrinsics">
           <Form.List name="extrinsics">
             {(fields, { add, remove }) => (
@@ -262,6 +305,25 @@ const ReplayBlock: React.FC<ReplayBlockProps> = ({ api, endpoint, wasmOverride }
           &nbsp;&nbsp;
           <Typography.Text>{message}</Typography.Text>
         </Form.Item>
+        {blockInfo && (
+          <Form.Item>
+            <Space direction="vertical">
+              <Typography.Text strong>Block #:</Typography.Text>
+              <Typography.Text>{blockInfo.number}</Typography.Text>
+              <Typography.Text strong>Block hash:</Typography.Text>
+              <Typography.Text code>{blockInfo.hash}</Typography.Text>
+            </Space>
+          </Form.Item>
+        )}
+        {blockExtrinsics && (
+          <Form.Item label="Extrinsics">
+            {blockExtrinsics.map((ext) => (
+              <Form.Item key={ext.id} required style={{ marginBottom: 8 }}>
+                <Input style={{ width: '85%' }} value={ext.hex} readOnly />
+              </Form.Item>
+            ))}
+          </Form.Item>
+        )}
       </Form>
       <Divider />
       {storageDiff && <DiffViewer {...storageDiff} />}
