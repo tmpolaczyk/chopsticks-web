@@ -5,6 +5,7 @@ import type { Api } from './types'
 
 import Collectives from './Collectives'
 import ConsoleTerminal from './ConsoleTerminal'
+import DecodeKey from './DecodeKey'
 import Democracy from './Democracy'
 import DryRun from './DryRun'
 import DryRunBlock from './DryRunBlock'
@@ -195,6 +196,11 @@ function App() {
       key: 'state-call',
       label: 'State Call',
       children: api && endpoint ? <StateCall api={api} endpoint={endpoint} /> : <Spin spinning={true} />,
+    },
+    {
+      key: 'decode-key',
+      label: 'Decode Key',
+      children: api && endpoint ? <DecodeKey api={api} endpoint={endpoint} /> : <Spin spinning={true} />,
     },
     {
       key: 'console',
