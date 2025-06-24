@@ -38,6 +38,10 @@ const WasmOptions: React.FC<WasmOptionsProps> = ({ onFileSelect, api, endpoint }
 
   // Handle new override file
   useEffect(() => {
+    if (!api) {
+      message.error('API not connected')
+      return
+    }
     if (fileObj) {
       // Stub validator (to be implemented)
       const parseWasmOverride = async (file: File): OverrideInfo => {
@@ -58,8 +62,6 @@ const WasmOptions: React.FC<WasmOptionsProps> = ({ onFileSelect, api, endpoint }
               .map((b) => b.toString(16).padStart(2, '0'))
               .join('')}`
           }
-          // TODO: using the downloaded wasm for wasm override doesnt work, check why
-          // probably download is broken
           console.log('Installing wasm override', wasmOverride)
           const buffer = new Uint8Array(await wasmOverride.arrayBuffer())
           console.log('buffer[0..10]:', JSON.stringify(buffer.slice(0, 10)))
@@ -97,7 +99,7 @@ const WasmOptions: React.FC<WasmOptionsProps> = ({ onFileSelect, api, endpoint }
     } else {
       setOverrideInfo(null)
     }
-  }, [fileObj, endpoint, api.query.system])
+  }, [api, fileObj, endpoint, api.query.system])
 
   const beforeUpload = useCallback((file: File) => {
     const isWasm = file.name.toLowerCase().endsWith('.wasm')
@@ -128,7 +130,8 @@ const WasmOptions: React.FC<WasmOptionsProps> = ({ onFileSelect, api, endpoint }
     try {
       const version = api.consts.system.version.toJSON()
       const code = await api.rpc.state.getStorage(':code')
-      const u8a = code.toU8a()
+      // Important, unwrap because :code is an Option<Vec<u8>>, so it will have a leading 0x01 byte
+      const u8a = code.unwrap().toU8a()
       const blob = new Blob([u8a], { type: 'application/wasm' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')

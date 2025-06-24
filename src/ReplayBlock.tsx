@@ -52,15 +52,12 @@ const ReplayBlock: React.FC<ReplayBlockProps> = ({ api, endpoint, wasmOverride }
           if (!parent) throw Error('cant find parent block')
 
           if (wasmOverride) {
-            // TODO: support wasm override
             // Helper: convert Uint8Array to hex string
             function u8aToHex(u8a: Uint8Array): string {
               return `0x${Array.from(u8a)
                 .map((b) => b.toString(16).padStart(2, '0'))
                 .join('')}`
             }
-            // TODO: using the downloaded wasm for wasm override doesnt work, check why
-            // probably download is broken
             console.log('Installing wasm override', wasmOverride)
             const buffer = new Uint8Array(await wasmOverride.arrayBuffer())
             console.log('buffer[0..10]:', JSON.stringify(buffer.slice(0, 10)))
