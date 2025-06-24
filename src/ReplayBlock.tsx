@@ -1,4 +1,5 @@
-import { Blockchain, ChopsticksProvider, processOptions } from '@acala-network/chopsticks-core'
+import { ChopsticksProvider, setup } from '@acala-network/chopsticks-core'
+import { runTask, taskHandler } from '@acala-network/chopsticks-core'
 import { IdbDatabase } from '@acala-network/chopsticks-db/browser'
 import { ApiPromise } from '@polkadot/api'
 import { Button, Divider, Form, Input, Space, Spin, Typography } from 'antd'
@@ -12,47 +13,6 @@ export type ReplayBlockProps = {
   api: Api
   endpoint: string
   wasmOverride: File
-}
-
-// Custom setup with no inherents, because when we replay a block we can use the existing inherents, no need to create new ones.
-// Must stay updated to match this file:
-// https://github.com/AcalaNetwork/chopsticks/blob/5fb31092a879c1a1ac712b7b24bd9fa91f0bee53/packages/core/src/setup.ts#L80
-export const setup2 = async (options: SetupOptions) => {
-  const { api, blockHash, ...opts } = await processOptions(options)
-
-  const header = await api.getHeader(blockHash)
-  if (!header) {
-    throw new Error(`Cannot find header for ${blockHash}`)
-  }
-
-  // This magic line will disable automatic inherents, so we can just use the real inherents read from the block
-  const inherentProviders = []
-
-  const chain = new Blockchain({
-    api,
-    buildBlockMode: opts.buildBlockMode,
-    inherentProviders,
-    db: opts.db,
-    header: {
-      hash: blockHash as HexString,
-      number: Number(header.number),
-    },
-    mockSignatureHost: opts.mockSignatureHost,
-    allowUnresolvedImports: opts.allowUnresolvedImports,
-    runtimeLogLevel: opts.runtimeLogLevel,
-    registeredTypes: opts.registeredTypes || {},
-    offchainWorker: opts.offchainWorker,
-    maxMemoryBlockCount: opts.maxMemoryBlockCount,
-    processQueuedMessages: opts.processQueuedMessages,
-    saveBlocks: opts.saveBlocks,
-  })
-
-  if (opts.genesis) {
-    // build 1st block
-    await chain.newBlock()
-  }
-
-  return chain
 }
 
 const ReplayBlock: React.FC<ReplayBlockProps> = ({ api, endpoint, wasmOverride }) => {
@@ -70,7 +30,7 @@ const ReplayBlock: React.FC<ReplayBlockProps> = ({ api, endpoint, wasmOverride }
       setMessage('Starting')
 
       const blockNumber = ((await api.query.system.number()) as any).toNumber()
-      let chain = await setup2({
+      const chain = await setup({
         endpoint,
         block: blockNumber,
         mockSignatureHost: true,
@@ -78,60 +38,65 @@ const ReplayBlock: React.FC<ReplayBlockProps> = ({ api, endpoint, wasmOverride }
         runtimeLogLevel: 5,
       })
 
-      /*let chain = null;
-
-      const oldExtrinsics = await api.getBlock(blockNumber).then((b) => {
-        if (!b) {
-          throw new Error(`Block ${this.hash} not found`)
-        }
-        return b.block.extrinsics
-      })
-      */
-
-      const oldExtrinsics = await chain.head.extrinsics
-
-      //console.log("replay block. num extrinsics:", oldExtrinsics.length, oldExtrinsics);
-      console.log('replay block. num extrinsics:', oldExtrinsics.length, oldExtrinsics)
-
-      // Restart chain starting from previous block, to see storage diff caused by new block
-      // TODO: even this doesnt work. Maybe try to only create one chain with blockNumber-1, and get extrinsics using
-      // api, not chain
-      chain = await setup2({
-        endpoint,
-        block: blockNumber - 1,
-        mockSignatureHost: true,
-        db: new IdbDatabase('cache'),
-        runtimeLogLevel: 5,
-      })
-
-      if (wasmOverride) {
-        // Helper: convert Uint8Array to hex string
-        function u8aToHex(u8a: Uint8Array): string {
-          return `0x${Array.from(u8a)
-            .map((b) => b.toString(16).padStart(2, '0'))
-            .join('')}`
-        }
-        // TODO: using the downloaded wasm for wasm override doesnt work, check why
-        // probably download is broken
-        console.log('Installing wasm override', wasmOverride)
-        const buffer = new Uint8Array(await wasmOverride.arrayBuffer())
-        console.log('buffer[0..10]:', JSON.stringify(buffer.slice(0, 10)))
-        const wasmHex = u8aToHex(buffer)
-        console.log('wasmHex[0..10]:', JSON.stringify(wasmHex.slice(0, 10)))
-        const at = null
-        if (at) {
-          const block = await chain.getBlock(at)
-          if (!block) throw new Error(`Cannot find block ${at}`)
-          block.setWasm(wasmHex as HexString)
-        } else {
-          chain.head.setWasm(wasmHex as HexString)
-        }
-      }
-
       setMessage('Chopsticks instance created')
 
       const dryRun = async () => {
         try {
+          // Copy the run-block logic from cli code:
+          // https://github.com/AcalaNetwork/chopsticks/blob/5fb31092a879c1a1ac712b7b24bd9fa91f0bee53/packages/chopsticks/src/plugins/run-block/cli.ts
+          // We cannot use buildBlock because that will automatically add inherents, so we will have 2x each inherent
+
+          const header = await chain.head.header
+          const block = chain.head
+          const parent = await block.parentBlock
+          if (!parent) throw Error('cant find parent block')
+
+          if (wasmOverride) {
+            // TODO: support wasm override
+            // Helper: convert Uint8Array to hex string
+            function u8aToHex(u8a: Uint8Array): string {
+              return `0x${Array.from(u8a)
+                .map((b) => b.toString(16).padStart(2, '0'))
+                .join('')}`
+            }
+            // TODO: using the downloaded wasm for wasm override doesnt work, check why
+            // probably download is broken
+            console.log('Installing wasm override', wasmOverride)
+            const buffer = new Uint8Array(await wasmOverride.arrayBuffer())
+            console.log('buffer[0..10]:', JSON.stringify(buffer.slice(0, 10)))
+            const wasmHex = u8aToHex(buffer)
+            console.log('wasmHex[0..10]:', JSON.stringify(wasmHex.slice(0, 10)))
+            const block = parent
+            if (!block) throw new Error(`Cannot find block ${at}`)
+            block.setWasm(wasmHex as HexString)
+          }
+
+          const wasm = await parent.wasm
+
+          const calls: [string, HexString[]][] = [['Core_initialize_block', [header.toHex()]]]
+
+          for (const extrinsic of await block.extrinsics) {
+            calls.push(['BlockBuilder_apply_extrinsic', [extrinsic]])
+          }
+
+          calls.push(['BlockBuilder_finalize_block', []])
+
+          const result = await runTask(
+            {
+              wasm,
+              calls,
+              mockSignatureHost: false,
+              allowUnresolvedImports: false,
+              runtimeLogLevel: 5,
+            },
+            taskHandler(parent),
+          )
+
+          if ('Error' in result) {
+            throw new Error(result.Error)
+          }
+
+          /*
           const umpMessages: Record<number, any> = {}
           for (const item of ump ?? []) {
             umpMessages[item.paraId] = umpMessages[item.paraId] ?? []
@@ -145,23 +110,13 @@ const ReplayBlock: React.FC<ReplayBlockProps> = ({ api, endpoint, wasmOverride }
               data: item.message,
             })
           }
-
-          //const nextBlock = await chain.getBlock(blockNumber)
-          //if (!nextBlock) throw new Error(`Cannot find block ${blockNumber}`)
-
-          //chain.#inherentProviders = [];
-          const block = await chain.newBlock({
-            transactions: oldExtrinsics,
-            downwardMessages: dmp,
-            upwardMessages: umpMessages,
-            horizontalMessages: hrmpMessages,
-          })
+          */
 
           setMessage('Dry run completed. Preparing diff...')
 
-          const diff = await block.storageDiff()
+          const diff = result.Call.storageDiff
 
-          return await decodeStorageDiff(chain.head, Object.entries(diff) as any)
+          return await decodeStorageDiff(parent, diff)
         } catch (e: any) {
           console.error(e)
           return undefined
