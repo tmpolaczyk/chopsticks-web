@@ -3,6 +3,7 @@ import { IdbDatabase } from '@acala-network/chopsticks-db/browser'
 import { DownloadOutlined, UploadOutlined } from '@ant-design/icons'
 import { Button, Divider, Space, Typography, Upload, message } from 'antd'
 import React, { useCallback, useState, useEffect } from 'react'
+import { BlockDate } from './BlockDate'
 
 import type { Api } from './types'
 
@@ -26,6 +27,7 @@ const WasmOptions: React.FC<WasmOptionsProps> = ({ onFileSelect, api, endpoint }
   const [specVersion, setSpecVersion] = useState<number | null>(null)
   const [findingLastUpdate, setFindingLastUpdate] = useState<boolean>(false)
   const [lastUpdateBlock, setLastUpdateBlock] = useState<number | null>(null)
+  const [findingLastUpdateRange, setFindingLastUpdateRange] = useState<number[] | null>(null)
 
   // Initialize runtime name and version from API
   useEffect(() => {
@@ -156,8 +158,26 @@ const WasmOptions: React.FC<WasmOptionsProps> = ({ onFileSelect, api, endpoint }
     }
     setFindingLastUpdate(true)
     try {
-      const header = await api.rpc.chain.getHeader()
-      setLastUpdateBlock((header.number as any).toNumber())
+      let blockNumberMin = 0
+      let blockNumberMax = ((await api.query.system.number()) as any).toNumber()
+      let apiAt = await api.at(await api.rpc.chain.getBlockHash(blockNumberMax))
+      const newUpgradeInfo = ((await apiAt.query.system.lastRuntimeUpgrade()) as any).toHex()
+
+      while (true) {
+        const blockNumberToCheck = (blockNumberMin + blockNumberMax) >> 1
+        apiAt = await api.at(await api.rpc.chain.getBlockHash(blockNumberToCheck))
+        const upgradeInfo = ((await apiAt.query.system.lastRuntimeUpgrade()) as any).toHex()
+        if (upgradeInfo === newUpgradeInfo) {
+          blockNumberMax = blockNumberToCheck
+        } else {
+          blockNumberMin = blockNumberToCheck
+        }
+        setFindingLastUpdateRange([blockNumberMin, blockNumberMax])
+        if (blockNumberMax - blockNumberMin < 2) {
+          setLastUpdateBlock(blockNumberMax)
+          break
+        }
+      }
     } catch (error: any) {
       message.error(`Error fetching last runtime update: ${error.message || error}`)
     } finally {
@@ -174,11 +194,18 @@ const WasmOptions: React.FC<WasmOptionsProps> = ({ onFileSelect, api, endpoint }
         Runtime Version: <Typography.Text strong>{specVersion ?? '-'}</Typography.Text>
       </Typography.Text>
       <Space>
-        <Button onClick={handleFindLastUpdate} loading={findingLastUpdate} disabled={!api}>
-          Find Last Runtime Update Date
-        </Button>
-        {lastUpdateBlock !== null && <Typography.Text>Block #{lastUpdateBlock}</Typography.Text>}
+        {lastUpdateBlock === null && findingLastUpdateRange !== null && (
+          <Typography.Text>
+            Searching range #{findingLastUpdateRange[0]} - #{findingLastUpdateRange[1]}{' '}
+          </Typography.Text>
+        )}
+        {lastUpdateBlock !== null && <Typography.Text>Last runtime upgrade: Block #{lastUpdateBlock} on</Typography.Text>}
+        {lastUpdateBlock !== null && <BlockDate api={api} blockNumber={lastUpdateBlock} />}
       </Space>
+      <Button onClick={handleFindLastUpdate} loading={findingLastUpdate} disabled={!api}>
+        Find Last Runtime Update Date
+      </Button>
+
       <Button icon={<DownloadOutlined />} onClick={handleDownloadWasm} disabled={!api} loading={downloading}>
         Download On-Chain WASM
       </Button>

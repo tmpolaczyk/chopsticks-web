@@ -91,7 +91,7 @@ function App() {
     {
       key: 'wasm-override',
       label: 'WasmOptions',
-      children: <WasmOptions onFileSelect={onFileSelect} api={api} endpoint={endpoint} />,
+      children: api ? <WasmOptions onFileSelect={onFileSelect} api={api} endpoint={endpoint} /> : <Spin spinning={true} />,
     },
     {
       key: 'preimages',
