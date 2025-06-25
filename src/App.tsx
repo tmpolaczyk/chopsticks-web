@@ -9,6 +9,7 @@ import DecodeKey from './DecodeKey'
 import Democracy from './Democracy'
 import DryRun from './DryRun'
 import DryRunBlock from './DryRunBlock'
+import FindBlockByDate from './FindBlockByDate'
 import Preimages from './Preimages'
 import Referenda from './Referenda'
 import ReplayBlock from './ReplayBlock'
@@ -207,6 +208,11 @@ function App() {
       key: 'storage-key-change-finder',
       label: 'Binary search storage key',
       children: api ? <StorageKeyChangeFinder api={api} /> : <Spin spinning={true} />,
+    },
+    {
+      key: 'find-block-by-date',
+      label: 'Find block by date',
+      children: api ? <FindBlockByDate api={api} /> : <Spin spinning={true} />,
     },
     {
       key: 'console',
