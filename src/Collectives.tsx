@@ -2,12 +2,12 @@ import { Button, Table } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import React, { useState, useEffect } from 'react'
 
+import type { ApiPromise } from '@polkadot/api'
 import { ArgsCell, CompactArgsCell, HexCell } from './components'
 import { callToHuman } from './helper'
-import type { Api } from './types'
 
 export type CollectivesProps = {
-  api: Api
+  api: ApiPromise
   onDryRunPreimage: (hex: string, origin: any) => void
   collectivesPallet: string
 }

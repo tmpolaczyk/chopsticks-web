@@ -7,10 +7,9 @@ import React, { useCallback, useState } from 'react'
 import DiffViewer from './DiffViewer'
 import { ArgsCell } from './components'
 import { decodeStorageDiff } from './helper'
-import type { Api } from './types'
 
 export type StateCallProps = {
-  api: Api
+  api: ApiPromise
   endpoint: string
 }
 

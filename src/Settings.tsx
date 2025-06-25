@@ -5,8 +5,6 @@ import _ from 'lodash'
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
-import type { Api } from './types'
-
 const endpoints = [
   'wss://rpc.polkadot.io',
   'wss://polkadot-collectives-rpc.polkadot.io',
@@ -36,14 +34,13 @@ const relaychainUrls = [
 endpoints.splice(0, 0, ...[...relaychainUrls, ...parachainUrls].map((url) => url.replace(/^https?:\/\//, 'wss://')))
 
 export type SettingsProps = {
-  onConnect: (api?: Api, endpoint?: string) => void
+  onConnect: (api?: ApiPromise, endpoint?: string) => void
 }
 
 const Settings: React.FC<SettingsProps> = ({ onConnect }) => {
   const [endpoint, setEndpoint] = useLocalStorage('endpoint')
   const [searchParams, setSearchParams] = useSearchParams()
   const [api, setApi] = useState<ApiPromise>()
-  const [apiAt, setApiAt] = useState<Api>()
   const [connectionStatus, setConnectionStatus] = useState<string>()
 
   const endpointOptions = useMemo(() => {
@@ -58,9 +55,8 @@ const Settings: React.FC<SettingsProps> = ({ onConnect }) => {
     async (values: any) => {
       const { endpoint: newEndpoint } = values
       const updateApi = api === undefined || endpoint !== newEndpoint
-      const updateApiAt = apiAt === undefined || updateApi
 
-      if (!updateApi && !updateApiAt) {
+      if (!updateApi) {
         return
       }
 
@@ -70,35 +66,19 @@ const Settings: React.FC<SettingsProps> = ({ onConnect }) => {
         api.disconnect()
         setApi(undefined)
       }
-      if (updateApiAt && apiAt !== undefined) {
-        setApiAt(undefined)
-      }
       setConnectionStatus('Connecting...')
 
       // TODO: figure why this is called multiple times and ensure we don't create extra connections
       const wsProvider = new WsProvider(newEndpoint)
       const newApi = await ApiPromise.create({ provider: wsProvider })
       setApi(newApi)
-      const newBlockHeight = 'latest'
-
-      if (newBlockHeight === 'latest') {
-        setApiAt(newApi)
-      } else {
-        if (newBlockHeight === 'last') {
-          const blockHash = await newApi.rpc.chain.getBlockHash()
-          const newApiAt = await newApi.at(blockHash)
-          setApiAt(newApiAt)
-        } else {
-          setConnectionStatus('Block height not found')
-        }
-      }
     },
-    [endpoint, api, apiAt, setEndpoint],
+    [endpoint, api, setEndpoint],
   )
 
   useEffect(() => {
-    const name = _.capitalize(apiAt?.runtimeVersion.specName.toString())
-    const unsub: any = apiAt?.query.system.number((val: any) => setConnectionStatus(`Connected: ${name} @ ${val}`))
+    const name = _.capitalize(api?.runtimeVersion.specName.toString())
+    const unsub: any = api?.query.system.number((val: any) => setConnectionStatus(`Connected: ${name} @ ${val}`))
     return () => {
       const f = async () => {
         const u = await unsub
@@ -106,20 +86,19 @@ const Settings: React.FC<SettingsProps> = ({ onConnect }) => {
       }
       f()
     }
-  }, [apiAt])
+  }, [api])
 
   useEffect(() => {
-    if (apiAt) {
-      onConnect(apiAt, endpoint || undefined)
+    if (api) {
+      onConnect(api, endpoint || undefined)
     } else {
       onConnect(undefined, undefined)
     }
-  }, [apiAt, endpoint, onConnect])
+  }, [api, endpoint, onConnect])
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: run once only
   useEffect(() => {
     let initialEndpoint = endpoint ?? endpoints[0]
-    const initialBlockHeight = 'latest'
     if (searchParams.has('endpoint')) {
       initialEndpoint = searchParams.get('endpoint')!
       setEndpoint(initialEndpoint)

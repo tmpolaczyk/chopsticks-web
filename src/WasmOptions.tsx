@@ -1,17 +1,18 @@
 import { setup } from '@acala-network/chopsticks-core'
 import { IdbDatabase } from '@acala-network/chopsticks-db/browser'
 import { DownloadOutlined, UploadOutlined } from '@ant-design/icons'
+import type { ApiPromise } from '@polkadot/api'
+import type { HexString } from '@polkadot/util/types'
 import { Button, Divider, Space, Typography, Upload, message } from 'antd'
+import type { UploadChangeParam, UploadFile } from 'antd/es/upload'
 import React, { useCallback, useState, useEffect } from 'react'
 import { BlockDate } from './BlockDate'
-
-import type { Api } from './types'
 
 export type WasmOptionsProps = {
   /** Called when the user selects a valid .wasm file */
   onFileSelect: (file: File) => void
   /** Polkadot API instance to fetch on-chain WASM */
-  api?: Api
+  api: ApiPromise
   endpoint: string
 }
 
@@ -31,22 +32,16 @@ const WasmOptions: React.FC<WasmOptionsProps> = ({ onFileSelect, api, endpoint }
 
   // Initialize runtime name and version from API
   useEffect(() => {
-    if (api) {
-      const version = api.consts.system.version.toJSON()
-      setRuntimeName(version.specName.toString())
-      setSpecVersion(Number(version.specVersion))
-    }
+    const version = api.consts.system.version.toJSON()
+    setRuntimeName(version.specName.toString())
+    setSpecVersion(Number(version.specVersion))
   }, [api])
 
   // Handle new override file
   useEffect(() => {
-    if (!api) {
-      message.error('API not connected')
-      return
-    }
     if (fileObj) {
       // Stub validator (to be implemented)
-      const parseWasmOverride = async (file: File): OverrideInfo => {
+      const parseWasmOverride = async (file: File): Promise<OverrideInfo> => {
         const blockNumber = ((await api.query.system.number()) as any).toNumber()
         const chain = await setup({
           endpoint,
@@ -112,7 +107,7 @@ const WasmOptions: React.FC<WasmOptionsProps> = ({ onFileSelect, api, endpoint }
   }, [])
 
   const handleChange = useCallback(
-    (info) => {
+    (info: UploadChangeParam<UploadFile<any>>) => {
       const file = info.file.originFileObj as File
       if (file) {
         setFileName(file.name)
@@ -124,10 +119,6 @@ const WasmOptions: React.FC<WasmOptionsProps> = ({ onFileSelect, api, endpoint }
   )
 
   const handleDownloadWasm = useCallback(async () => {
-    if (!api) {
-      message.error('API not connected')
-      return
-    }
     setDownloading(true)
     try {
       const version = api.consts.system.version.toJSON()
@@ -152,10 +143,6 @@ const WasmOptions: React.FC<WasmOptionsProps> = ({ onFileSelect, api, endpoint }
   }, [api])
 
   const handleFindLastUpdate = useCallback(async () => {
-    if (!api) {
-      message.error('API not connected')
-      return
-    }
     setFindingLastUpdate(true)
     try {
       let blockNumberMin = 0

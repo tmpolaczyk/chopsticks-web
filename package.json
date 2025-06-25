@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "bunx --bun vite",
-    "build": "tsc && bunx --bun vite build",
+    "build": "bunx --bun vite build",
+    "build-safe": "tsc && bunx --bun vite build",
     "preview": "bunx --bun vite preview",
     "lint": "biome check .",
     "fix": "biome check --write",

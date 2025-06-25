@@ -5,15 +5,15 @@ import { ApiPromise } from '@polkadot/api'
 import { Button, Divider, Form, Input, Space, Spin, Typography } from 'antd'
 import React, { useCallback, useState } from 'react'
 
+import type { HexString } from '@polkadot/util/types'
 import { nanoid } from 'nanoid'
 import DiffViewer from './DiffViewer'
 import { decodeStorageDiff } from './helper'
-import type { Api } from './types'
 
 export type ReplayBlockProps = {
-  api: Api
+  api: ApiPromise
   endpoint: string
-  wasmOverride: File
+  wasmOverride: File | undefined
 }
 
 type ExtrinsicInfo = {

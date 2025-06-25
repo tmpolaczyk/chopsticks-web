@@ -1,16 +1,16 @@
+import type { ApiPromise } from '@polkadot/api'
 import { hexToBn } from '@polkadot/util'
 import { Button, Card, Col, Form, Input, Radio, Row, Select, Space, Typography, message } from 'antd'
 import React, { useState, useCallback, useEffect } from 'react'
 import { BlockDate } from './BlockDate'
-import type { Api } from './types'
 
 export type StorageKeyChangeFinderProps = {
   /** Polkadot API instance to query chain data */
-  api?: Api
+  api: ApiPromise
 }
 
 // Suggested keys configuration
-const SUGGESTED_KEYS: { label: string; deriveHex: (api: Api) => string }[] = [
+const SUGGESTED_KEYS: { label: string; deriveHex: (api: ApiPromise) => string }[] = [
   { label: 'session.currentIndex', deriveHex: (api) => api.query.session.currentIndex.key() },
   { label: 'externalValidators.currentEra', deriveHex: (api) => api.query.externalValidators.currentEra.key() },
   { label: 'externalValidators.externalIndex', deriveHex: (api) => api.query.externalValidators.externalIndex.key() },
@@ -46,7 +46,6 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
   }, [mode, storageKey, targetNumber])
 
   const findChange = useCallback(async () => {
-    if (!api) return message.error('API not connected')
     const validateKey = () => /^0x[0-9a-fA-F]+$/.test(storageKey)
     if (!validateKey()) return message.error('Enter a valid hex storage key')
     setFinding(true)
@@ -118,7 +117,6 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
   }, [api, storageKey])
 
   const findNumber = useCallback(async () => {
-    if (!api) return message.error('API not connected')
     const validateKey = () => /^0x[0-9a-fA-F]+$/.test(storageKey)
     if (!validateKey()) return message.error('Enter a valid hex storage key')
     const num = Number(targetNumber)

@@ -8,10 +8,9 @@ import { compactAddLength } from '@polkadot/util'
 import DiffViewer from './DiffViewer'
 import { ArgsCell } from './components'
 import { callToHuman, decodeStorageDiff } from './helper'
-import type { Api } from './types'
 
 export type DryRunProps = {
-  api: Api
+  api: ApiPromise
   endpoint: string
   preimage?: { hex: string; origin: any }
   extrinsicMode?: boolean

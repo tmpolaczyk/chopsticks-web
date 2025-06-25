@@ -1,13 +1,13 @@
 import { ExclamationCircleOutlined, InfoCircleOutlined } from '@ant-design/icons'
+import type { ApiPromise } from '@polkadot/api'
 import { Button, DatePicker, Input, Radio, Space, Tooltip, Typography, message } from 'antd'
 import moment, { type Moment } from 'moment'
 import React, { useState, useCallback, useEffect } from 'react'
 import { BlockDate } from './BlockDate'
-import type { Api } from './types'
 
 export type FindBlockByDateProps = {
   /** Polkadot API instance to query chain data */
-  api?: Api
+  api: ApiPromise
 }
 
 const FindBlockByDate: React.FC<FindBlockByDateProps> = ({ api }) => {
@@ -67,10 +67,6 @@ const FindBlockByDate: React.FC<FindBlockByDateProps> = ({ api }) => {
   }
 
   const handleFindBlock = useCallback(async () => {
-    if (!api) {
-      message.error('API not connected')
-      return
-    }
     if (targetTs === null) {
       message.error('Please select a date/time or enter a Unix timestamp')
       return

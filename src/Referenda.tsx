@@ -3,12 +3,12 @@ import type { ColumnsType } from 'antd/es/table'
 import _ from 'lodash'
 import React, { useState, useEffect } from 'react'
 
+import type { ApiPromise } from '@polkadot/api'
 import { ArgsCell, CompactArgsCell, HexCell } from './components'
 import { callToHuman } from './helper'
-import type { Api } from './types'
 
 export type ReferendaProps = {
-  api: Api
+  api: ApiPromise
   onDryRunPreimage: (hex: string, origin: any) => void
   referendaPallet: string
 }

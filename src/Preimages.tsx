@@ -3,11 +3,11 @@ import React, { useState, useEffect, useCallback } from 'react'
 import { Button, Input, Table } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 
+import type { ApiPromise } from '@polkadot/api'
 import { ArgsCell, CompactArgsCell, HexCell } from './components'
-import type { Api } from './types'
 
 export type PreimagesProps = {
-  api: Api
+  api: ApiPromise
   onDryRunPreimage: (hex: string) => void
 }
 

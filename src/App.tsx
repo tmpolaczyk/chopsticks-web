@@ -1,8 +1,7 @@
 import { Collapse, type CollapseProps, Spin } from 'antd'
 import { useCallback, useState } from 'react'
 
-import type { Api } from './types'
-
+import type { ApiPromise } from '@polkadot/api'
 import Collectives from './Collectives'
 import ConsoleTerminal from './ConsoleTerminal'
 import DecodeKey from './DecodeKey'
@@ -19,13 +18,13 @@ import StorageKeyChangeFinder from './StorageKeyChangeFinder'
 import WasmOptions from './WasmOptions'
 
 function App() {
-  const [api, setApi] = useState<Api>()
+  const [api, setApi] = useState<ApiPromise>()
   const [wasmOverride, setWasmOverride] = useState<File>()
   const [endpoint, setEndpoint] = useState<string>()
   const [activeKey, setActiveKey] = useState<string[]>(['settings'])
   const [preimage, setPreimage] = useState<{ hex: string; origin: any }>()
 
-  const onConnect = useCallback((api?: Api, endpoint?: string) => {
+  const onConnect = useCallback((api?: ApiPromise, endpoint?: string) => {
     setApi(api)
     setEndpoint(endpoint)
   }, [])
@@ -93,7 +92,7 @@ function App() {
     {
       key: 'wasm-override',
       label: 'WasmOptions',
-      children: api ? <WasmOptions onFileSelect={onFileSelect} api={api} endpoint={endpoint} /> : <Spin spinning={true} />,
+      children: api && endpoint ? <WasmOptions onFileSelect={onFileSelect} api={api} endpoint={endpoint} /> : <Spin spinning={true} />,
     },
     {
       key: 'preimages',
