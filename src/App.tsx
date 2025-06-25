@@ -14,6 +14,7 @@ import Referenda from './Referenda'
 import ReplayBlock from './ReplayBlock'
 import Settings from './Settings'
 import StateCall from './StateCall'
+import StorageKeyChangeFinder from './StorageKeyChangeFinder'
 import WasmOptions from './WasmOptions'
 
 function App() {
@@ -201,6 +202,11 @@ function App() {
       key: 'decode-key',
       label: 'Decode Key',
       children: api && endpoint ? <DecodeKey api={api} endpoint={endpoint} /> : <Spin spinning={true} />,
+    },
+    {
+      key: 'storage-key-change-finder',
+      label: 'Binary search storage key',
+      children: api ? <StorageKeyChangeFinder api={api} /> : <Spin spinning={true} />,
     },
     {
       key: 'console',
