@@ -75,10 +75,12 @@ const customTypes = {
     validators: 'Vec<ValidatorId>',
     external_index: 'u64',
   },
-  ValidatorId: {
-    x: 'AccountId',
-  },
+  ValidatorId: 'AccountId',
 }
+
+const iface = new Interface([
+  'event OutboundMessageAccepted(bytes32 indexed channel_id, uint64 nonce, bytes32 indexed message_id, bytes payload)',
+])
 
 const theme = {
   scheme: 'monokai',
@@ -184,10 +186,6 @@ const SnowbridgeInboundSubmit: React.FC<SnowbridgeInboundSubmitProps> = ({ api }
         const hash = await api.rpc.chain.getBlockHash(block)
         const blockE = await api.rpc.chain.getBlock(hash)
         const extrs = await blockE.block.extrinsics
-
-        const iface = new Interface([
-          'event OutboundMessageAccepted(bytes32 indexed channel_id, uint64 nonce, bytes32 indexed message_id, bytes payload)',
-        ])
 
         // TODO: assuming there is only 1 submit per block, may be more
         for (const [index, extrinsic] of extrs.entries()) {
@@ -323,14 +321,14 @@ const SnowbridgeInboundSubmit: React.FC<SnowbridgeInboundSubmitProps> = ({ api }
                   <>
                     <Typography.Text>Nonce: {item.nonce}</Typography.Text>
                     <Form.Item label="Encoded Message" style={{ marginTop: 8 }}>
-                      <Input.TextArea value={item.messageHex} autoSize={{ minRows: 1, maxRows: 4 }} readOnly />
+                      <Input style={{ width: '85%' }} value={item.messageHex} readOnly />
                       <div style={{ marginTop: 16, maxHeight: 400, overflow: 'auto' }}>
                         <JSONTree
                           data={item.messageJson}
                           hideRoot={true}
                           shouldExpandNodeInitially={() => true}
                           theme={theme}
-                          invertTheme={false}
+                          invertTheme={true}
                         />
                       </div>
                     </Form.Item>
