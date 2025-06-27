@@ -1,6 +1,6 @@
 import type { ApiPromise } from '@polkadot/api'
 import { hexToBn } from '@polkadot/util'
-import { Button, Card, Col, Form, Input, InputNumber, List, Row, Select, Typography, message } from 'antd'
+import { Button, Card, Col, Form, Input, InputNumber, List, Radio, Row, Select, Typography, message } from 'antd'
 import { Interface } from 'ethers'
 import React, { useState, useCallback, useEffect } from 'react'
 import { JSONTree } from 'react-json-tree'
@@ -83,37 +83,27 @@ const iface = new Interface([
 ])
 
 const theme = {
-  scheme: 'monokai',
-  base00: '#272822',
-  base01: '#383830',
-  base02: '#49483e',
-  base03: '#75715e',
-  base04: '#a59f85',
-  base05: '#f8f8f2',
-  base06: '#f5f4f1',
-  base07: '#f9f8f5',
-  base08: '#f92672',
-  base09: '#fd971f',
-  base0A: '#f4bf75',
-  base0B: '#a6e22e',
-  base0C: '#a1efe4',
-  base0D: '#66d9ef',
-  base0E: '#ae81ff',
-  base0F: '#cc6633',
+  /* …monokai theme… */
 }
 
+// constants for your two windows
+const BLOCK_WINDOW = 10_000
+const NONCE_WINDOW = 5
+
 const SnowbridgeInboundSubmit: React.FC<SnowbridgeInboundSubmitProps> = ({ api }) => {
+  // === STATE ===
+  const [mode, setMode] = useState<'change' | 'number'>('change')
   const [channels, setChannels] = useState<string[]>([])
   const [channelId, setChannelId] = useState<string>('')
-  const [range, setRange] = useState<number>(10000)
-  const [searching, setSearching] = useState<boolean>(false)
-  const [changes, setChanges] = useState<ChangeItem[]>([])
   const [currentNonce, setCurrentNonce] = useState<number | null>(null)
+  const [head, setHead] = useState<number>(0)
+  const [searching, setSearching] = useState(false)
+  const [changes, setChanges] = useState<ChangeItem[]>([])
 
-  // Load available channels on mount
+  // === LOAD CHANNELS & REGISTER TYPES ===
   useEffect(() => {
     api.registry.register(customTypes)
-    const loadChannels = async () => {
+    ;(async () => {
       try {
         const entries = await api.query.ethereumInboundQueue.nonce.entries()
         const ids = entries.map(([key]) => (key.args[0] as any).toHex())
@@ -125,149 +115,207 @@ const SnowbridgeInboundSubmit: React.FC<SnowbridgeInboundSubmitProps> = ({ api }
       } catch (err: any) {
         message.error(err.message || 'Failed to load channels')
       }
-    }
-    loadChannels()
+    })()
   }, [api, channelId])
 
-  // Whenever channelId changes, fetch its current nonce
+  // === SUBSCRIBE HEAD & FETCH CURRENT NONCE ===
   useEffect(() => {
-    if (!channelId) {
+    let unsubHeads: any
+    ;(async () => {
+      // initial
+      const h = (await api.query.system.number()).toNumber()
+      setHead(h)
+      // subscribe
+      unsubHeads = await api.rpc.chain.subscribeNewHeads((header) => {
+        setHead(header.number.toNumber())
+      })
+    })()
+
+    // current nonce
+    if (channelId) {
+      ;(async () => {
+        try {
+          const headNum = (await api.query.system.number()).toNumber()
+          const hash = await api.rpc.chain.getBlockHash(headNum)
+          const key = api.query.ethereumInboundQueue.nonce.key(channelId)
+          const raw = await api.rpc.state.getStorage(key, hash)
+          const hex = raw?.toHex() || '0x'
+          const nonce = Number(hexToBn(hex.slice(0, 18), { isLe: true }).toString())
+          setCurrentNonce(nonce)
+        } catch (err: any) {
+          message.error(err.message || 'Failed to load current nonce')
+          setCurrentNonce(null)
+        }
+      })()
+    } else {
       setCurrentNonce(null)
-      return
     }
 
-    // async wrapper so we can use await
-    const fetchCurrentNonce = async () => {
-      try {
-        // 1) Get the latest block number
-        const head = (await api.query.system.number()).toNumber()
-        // 2) Grab its hash
-        const hash = await api.rpc.chain.getBlockHash(head)
-        // 3) Compute the storage key for this channel’s nonce
-        const keyHex = api.query.ethereumInboundQueue.nonce.key(channelId)
-        // 4) Read raw bytes from storage
-        const raw = await api.rpc.state.getStorage(keyHex, hash)
-        const hex = raw?.toHex() || '0x'
-        // 5) Decode exactly as you do in your scan routine:
-        const nonceHex = hex.slice(0, 18)
-        const nonce = Number(hexToBn(nonceHex, { isLe: true }).toString())
-        setCurrentNonce(nonce)
-      } catch (err: any) {
-        message.error(err.message || 'Failed to load current nonce')
-        setCurrentNonce(null)
-      }
+    return () => {
+      unsubHeads?.()
     }
-
-    fetchCurrentNonce()
   }, [api, channelId])
 
+  // === HELPERS ===
+  const readStorageAt = useCallback(
+    async (block: number): Promise<string> => {
+      const hash = await api.rpc.chain.getBlockHash(block)
+      const key = api.query.ethereumInboundQueue.nonce.key(channelId)
+      const raw = await api.rpc.state.getStorage(key, hash)
+      return raw?.toHex() ?? '0x'
+    },
+    [api, channelId],
+  )
+
+  const decodeAt = useCallback(
+    async (block: number, packedHex: string): Promise<ChangeItem> => {
+      // strip off the 8-byte LE nonce
+      const raw = packedHex.startsWith('0x') ? packedHex.slice(2) : packedHex
+      const nonce = Number(hexToBn(`0x${raw.slice(0, 16)}`, { isLe: true }).toString())
+
+      // now find the actual submit extrinsic in that block
+      const hash = await api.rpc.chain.getBlockHash(block)
+      const blockE = await api.rpc.chain.getBlock(hash)
+      for (const extrinsic of blockE.block.extrinsics) {
+        const { section, method } = extrinsic.method
+        if (section === 'ethereumInboundQueue' && method === 'submit') {
+          const msg = extrinsic.args[0]
+          const { eventLog } = (msg as any).toJSON()
+          const decoded = iface.decodeEventLog('OutboundMessageAccepted', eventLog.data, eventLog.topics)
+          const MAGIC = '0x70150038'
+          if (decoded.payload.startsWith(MAGIC)) {
+            const payload = api.registry.createType('Payload', decoded.payload)
+            return {
+              block,
+              nonce,
+              messageHex: payload.toHex(),
+              messageJson: payload.toJSON(),
+            }
+          }
+          const ver = api.registry.createType('VersionedXcmMessage', decoded.payload)
+          return {
+            block,
+            nonce,
+            messageHex: ver.toHex(),
+            messageJson: ver.toJSON(),
+          }
+        }
+      }
+      // no submit here
+      return { block, nonce, messageHex: '0x', messageJson: {} }
+    },
+    [api],
+  )
+
+  // === SEARCHER ===
   const findAllChanges = useCallback(async () => {
     if (!channelId) {
       return message.error('Select a channel')
     }
+    if (mode === 'number' && currentNonce === null) {
+      return message.error('Waiting on current nonce…')
+    }
+
     setSearching(true)
     setChanges([])
 
     try {
-      // 1) figure out your window
-      const head = (await api.query.system.number()).toNumber()
-      const from = Math.max(0, head - range)
+      const headNum = (await api.query.system.number()).toNumber()
 
-      // 2) give me back the raw hex at any block
-      const keyHex = api.query.ethereumInboundQueue.nonce.key(channelId)
-      const read = async (block: number): Promise<string> => {
-        const hash = await api.rpc.chain.getBlockHash(block)
-        const raw = await api.rpc.state.getStorage(keyHex, hash)
-        return raw?.toHex() ?? '0x'
-      }
+      if (mode === 'change') {
+        // ───── block‐range mode ─────
+        const from = Math.max(0, headNum - BLOCK_WINDOW)
+        // binary‐search existing logic…
+        const results: ChangeItem[] = []
+        const lowHex = await readStorageAt(from)
+        const highHex = await readStorageAt(headNum)
 
-      // helper to read any storage key at a given block
-      const findEthOutboundSubmit = async (block: number, nonce: number): Promise<any> => {
-        const hash = await api.rpc.chain.getBlockHash(block)
-        const blockE = await api.rpc.chain.getBlock(hash)
-        const extrs = await blockE.block.extrinsics
-
-        // TODO: assuming there is only 1 submit per block, may be more
-        for (const [index, extrinsic] of extrs.entries()) {
-          const { section, method } = extrinsic.method
-          if (section === 'ethereumInboundQueue' && method === 'submit') {
-            const message = extrinsic.args[0]
-            const { eventLog } = message.toJSON()
-            const decodedEvent = iface.decodeEventLog('OutboundMessageAccepted', eventLog.data, eventLog.topics)
-
-            //https://github.com/moondance-labs/tanssi-bridge-relayer/blob/247bc96365c5f8a9cdbcf3fae09a8ede79ac4c91/overridden_contracts/src/libraries/OSubstrateTypes.sol#L41
-            const MAGIC_BYTES = '0x70150038'
-
-            if (decodedEvent.payload.startsWith(MAGIC_BYTES)) {
-              // A bit hard to decode since the type is not part of metadata
-              const payload = api.registry.createType('Payload', decodedEvent.payload)
-              return { messageHex: payload.toHex(), messageJson: payload.toJSON() }
-            }
-
-            const versioned = api.registry.createType('VersionedXcmMessage', decodedEvent.payload)
-            return { messageHex: versioned.toHex(), messageJson: versioned.toJSON() }
+        const walk = async (low: number, high: number, lowHex: string, highHex: string): Promise<void> => {
+          if (lowHex === highHex) return
+          if (high - low <= 1) {
+            const itm = await decodeAt(high, highHex)
+            results.push(itm)
+            results.sort((a, b) => b.block - a.block)
+            setChanges([...results])
+            return
           }
+          const mid = Math.floor((low + high) / 2)
+          const midHex = await readStorageAt(mid)
+          await walk(mid, high, midHex, highHex)
+          await walk(low, mid, lowHex, midHex)
         }
 
-        return { messageHex: '0x', messageJson: {} }
-      }
+        await walk(from, headNum, lowHex, highHex)
+        results.sort((a, b) => b.block - a.block)
+        setChanges(results)
+      } else {
+        // ───── nonce-range mode (binary search) ─────
+        const lowNonceBound = Math.max(0, currentNonce! - NONCE_WINDOW)
+        const highNonceBound = Math.max(0, currentNonce!)
+        const results: ChangeItem[] = []
 
-      // 3) correctly split nonce vs. message, now async
-      const decode = async (block: number, packedHex: string): Promise<ChangeItem> => {
-        // strip 0x and pull off the first 16 chars → 8-byte LE nonce
-        const raw = packedHex.startsWith('0x') ? packedHex.slice(2) : packedHex
-        const nonceHex = raw.slice(0, 16)
-        const nonce = Number(hexToBn(`0x${nonceHex}`, { isLe: true }).toString())
+        // we search [0 … headNum], just like blocks
+        const from = 0
+        const lowHex = await readStorageAt(from)
+        const highHex = await readStorageAt(headNum)
 
-        // fetch the message at exactly this block
-        const { messageHex, messageJson } = await findEthOutboundSubmit(block, nonce)
+        const walkNonce = async (low: number, high: number, lowHex: string, highHex: string): Promise<void> => {
+          // decode the LE-nonce from each endpoint
+          const strip = (h: string) => (h.startsWith('0x') ? h.slice(2) : h)
+          const lowNonce = Number(hexToBn(`0x${strip(lowHex).slice(0, 16)}`, { isLe: true }).toString())
+          const highNonce = Number(hexToBn(`0x${strip(highHex).slice(0, 16)}`, { isLe: true }).toString())
 
-        return { block, nonce, messageHex, messageJson }
-      }
+          // if even the HIGH end is ≤ our lower-nonce bound, nothing here can qualify
+          if (highNonce < lowNonceBound) {
+            return
+          }
+          if (lowNonce > highNonceBound) {
+            return
+          }
 
-      // 4) binary-search only the ranges that actually changed
-      const results: ChangeItem[] = []
-      const walk = async (low: number, high: number, lowHex: string, highHex: string) => {
-        // no change at all → skip
-        if (lowHex === highHex) return
+          // no change at all → skip
+          if (lowHex === highHex) {
+            return
+          }
 
-        // adjacent blocks with a change → record it
-        if (high - low <= 1) {
-          results.push(await decode(high, highHex))
-          results.sort((a, b) => -(a.block - b.block))
-          setChanges(results)
-          return
+          // adjacent → check it
+          if (high - low <= 1) {
+            const itm = await decodeAt(high, highHex)
+            if (itm.nonce > lowNonceBound) {
+              results.push(itm)
+              results.sort((a, b) => b.block - a.block)
+              setChanges([...results])
+            }
+            return
+          }
+
+          // otherwise split in two
+          const mid = Math.floor((low + high) / 2)
+          const midHex = await readStorageAt(mid)
+          await walkNonce(mid, high, midHex, highHex)
+          await walkNonce(low, mid, lowHex, midHex)
         }
 
-        const mid = Math.floor((low + high) / 2)
-        const midHex = await read(mid)
+        await walkNonce(from, headNum, lowHex, highHex)
 
-        // if [mid,high] saw any change, recurse there
-        await walk(mid, high, midHex, highHex)
-        // if [low,mid] saw any change, recurse there
-        await walk(low, mid, lowHex, midHex)
+        // final sort & render
+        results.sort((a, b) => b.block - a.block)
+        setChanges(results)
       }
-
-      // kick off with the endpoints
-      const lowHex = await read(from)
-      const highHex = await read(head)
-      await walk(from, head, lowHex, highHex)
-
-      // 5) sort and render (redundant)
-      results.sort((a, b) => -(a.block - b.block))
-      setChanges(results)
     } catch (err: any) {
       message.error(err.message || 'Error fetching changes')
     } finally {
       setSearching(false)
     }
-  }, [api, channelId, range])
+  }, [api, channelId, mode, currentNonce, decodeAt, readStorageAt])
 
+  // === RENDER ===
   return (
     <Card>
       <Typography.Title level={4}>Snowbridge Inbound Changes</Typography.Title>
       <Form layout="vertical">
         <Row gutter={16} align="bottom">
+          {/* --- CHANNEL --- */}
           <Col span={8}>
             <Form.Item label="Channel">
               <Select
@@ -286,16 +334,46 @@ const SnowbridgeInboundSubmit: React.FC<SnowbridgeInboundSubmitProps> = ({ api }
               </Select>
             </Form.Item>
           </Col>
+
+          {/* --- MODE --- */}
           <Col span={8}>
-            <Form.Item label="Blocks Range">
-              <InputNumber value={range} onChange={(value) => setRange(value || 0)} min={1} style={{ width: '100%' }} />
+            <Form.Item label="Search Mode">
+              <Radio.Group value={mode} onChange={(e) => setMode(e.target.value)}>
+                <Radio.Button value="change">Last Change</Radio.Button>
+                <Radio.Button value="number">By Number</Radio.Button>
+              </Radio.Group>
             </Form.Item>
           </Col>
+
+          {/* --- FIND BUTTON --- */}
           <Col span={8}>
             <Form.Item>
               <Button type="primary" onClick={findAllChanges} loading={searching} disabled={!api || !channelId} block>
                 Find Recent Changes
               </Button>
+            </Form.Item>
+          </Col>
+        </Row>
+        {/* range display, constrained to max-width so it doesn’t span 100% */}
+        <Row gutter={16}>
+          <Col span={12}>
+            <Form.Item label={mode === 'change' ? 'Block Range' : 'Nonce Range'}>
+              <div style={{ maxWidth: 400 }}>
+                <Input.Group compact>
+                  <InputNumber
+                    style={{ width: '45%' }}
+                    value={
+                      mode === 'change'
+                        ? Math.max(0, head - BLOCK_WINDOW)
+                        : currentNonce !== null
+                          ? Math.max(0, currentNonce - NONCE_WINDOW)
+                          : undefined
+                    }
+                    readOnly
+                  />
+                  <Input style={{ width: '45%', marginLeft: '10%' }} value="latest" readOnly />
+                </Input.Group>
+              </div>
             </Form.Item>
           </Col>
         </Row>
