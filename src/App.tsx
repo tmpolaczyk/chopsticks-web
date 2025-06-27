@@ -13,6 +13,7 @@ import Preimages from './Preimages'
 import Referenda from './Referenda'
 import ReplayBlock from './ReplayBlock'
 import Settings from './Settings'
+import SnowbridgeInboundSubmit from './SnowbridgeInboundSubmit'
 import StateCall from './StateCall'
 import StorageKeyChangeFinder from './StorageKeyChangeFinder'
 import WasmOptions from './WasmOptions'
@@ -212,6 +213,11 @@ function App() {
       key: 'find-block-by-date',
       label: 'Find block by date',
       children: api ? <FindBlockByDate api={api} /> : <Spin spinning={true} />,
+    },
+    {
+      key: 'snowbridge-inbound-submit',
+      label: 'Snowbridge inbound submit',
+      children: api ? <SnowbridgeInboundSubmit api={api} /> : <Spin spinning={true} />,
     },
     {
       key: 'console',
