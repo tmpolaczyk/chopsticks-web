@@ -216,7 +216,7 @@ function App() {
     },
     {
       key: 'snowbridge-inbound-submit',
-      label: 'Snowbridge inbound submit',
+      label: 'Snowbridge inbound messages (from ethereum)',
       children: api ? <SnowbridgeInboundSubmit api={api} /> : <Spin spinning={true} />,
     },
     {

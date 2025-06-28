@@ -1,8 +1,8 @@
 import type { ApiPromise } from '@polkadot/api'
 import { hexToBn } from '@polkadot/util'
-import { Button, Card, Col, Form, Input, InputNumber, List, Radio, Row, Select, Typography, message } from 'antd'
+import { Button, Card, Col, Form, Input, InputNumber, List, Row, Select, Typography, message } from 'antd'
 import { Interface } from 'ethers'
-import React, { useState, useCallback, useEffect } from 'react'
+import React, { useState, useCallback, useEffect, useRef } from 'react'
 import { JSONTree } from 'react-json-tree'
 import { BlockDate } from './BlockDate'
 
@@ -12,10 +12,25 @@ export interface SnowbridgeInboundSubmitProps {
 }
 
 interface ChangeItem {
+  channel: string
   block: number
   nonce: number
   messageHex: string
   messageJson: any
+}
+
+// derive a color based on channel id
+const getColor = (ch: string) => {
+  // Grab last 4 chars (or fewer, if the string is shorter)
+  const tail = ch.slice(-4)
+
+  let val = 0
+  for (let i = 0; i < tail.length; i++) {
+    val = (val * 31 + tail.charCodeAt(i)) >>> 0
+  }
+
+  const hue = val % 360
+  return `hsl(${hue}, 70%, 80%)`
 }
 
 const customTypes = {
@@ -83,56 +98,63 @@ const iface = new Interface([
 ])
 
 const theme = {
-  /* …monokai theme… */
+  scheme: 'monokai',
+  base00: '#272822',
+  base01: '#383830',
+  base02: '#49483e',
+  base03: '#75715e',
+  base04: '#a59f85',
+  base05: '#f8f8f2',
+  base06: '#f5f4f1',
+  base07: '#f9f8f5',
+  base08: '#f92672',
+  base09: '#fd971f',
+  base0A: '#f4bf75',
+  base0B: '#a6e22e',
+  base0C: '#a1efe4',
+  base0D: '#66d9ef',
+  base0E: '#ae81ff',
+  base0F: '#cc6633',
 }
-
-// constants for your two windows
-const BLOCK_WINDOW = 10_000
-const NONCE_WINDOW = 5
 
 const SnowbridgeInboundSubmit: React.FC<SnowbridgeInboundSubmitProps> = ({ api }) => {
   // === STATE ===
-  const [mode, setMode] = useState<'change' | 'number'>('change')
   const [channels, setChannels] = useState<string[]>([])
-  const [channelId, setChannelId] = useState<string>('')
+  const [channelId, setChannelId] = useState<string>('*')
   const [currentNonce, setCurrentNonce] = useState<number | null>(null)
-  const [head, setHead] = useState<number>(0)
   const [searching, setSearching] = useState(false)
   const [changes, setChanges] = useState<ChangeItem[]>([])
+  const didRegisterRef = useRef(false)
+  const [rangeStart, setRangeStart] = useState<number | undefined>()
+  const [rangeEnd, setRangeEnd] = useState<number | undefined>()
+  const [nonceStart, setNonceStart] = useState<number | undefined>(0)
+  const [nonceEnd, setNonceEnd] = useState<number | undefined>()
 
   // === LOAD CHANNELS & REGISTER TYPES ===
   useEffect(() => {
+    if (didRegisterRef.current) {
+      return
+    }
+    didRegisterRef.current = true
     api.registry.register(customTypes)
     ;(async () => {
       try {
         const entries = await api.query.ethereumInboundQueue.nonce.entries()
-        const ids = entries.map(([key]) => (key.args[0] as any).toHex())
-        ids.sort()
+        const ids = entries.map(([key]) => (key.args[0] as any).toHex()).sort()
         setChannels(ids)
-        if (ids.length && !channelId) {
-          setChannelId(ids[0])
-        }
       } catch (err: any) {
         message.error(err.message || 'Failed to load channels')
       }
     })()
-  }, [api, channelId])
-
-  // === SUBSCRIBE HEAD & FETCH CURRENT NONCE ===
-  useEffect(() => {
-    let unsubHeads: any
     ;(async () => {
-      // initial
       const h = (await api.query.system.number()).toNumber()
-      setHead(h)
-      // subscribe
-      unsubHeads = await api.rpc.chain.subscribeNewHeads((header) => {
-        setHead(header.number.toNumber())
-      })
+      setRangeStart(h - 10_000)
     })()
+  }, [api])
 
-    // current nonce
-    if (channelId) {
+  // fetch head and nonce
+  useEffect(() => {
+    if (channelId && channelId !== '*') {
       ;(async () => {
         try {
           const headNum = (await api.query.system.number()).toNumber()
@@ -150,30 +172,23 @@ const SnowbridgeInboundSubmit: React.FC<SnowbridgeInboundSubmitProps> = ({ api }
     } else {
       setCurrentNonce(null)
     }
-
-    return () => {
-      unsubHeads?.()
-    }
   }, [api, channelId])
 
   // === HELPERS ===
   const readStorageAt = useCallback(
-    async (block: number): Promise<string> => {
+    async (ch: string, block: number): Promise<string> => {
       const hash = await api.rpc.chain.getBlockHash(block)
-      const key = api.query.ethereumInboundQueue.nonce.key(channelId)
+      const key = api.query.ethereumInboundQueue.nonce.key(ch)
       const raw = await api.rpc.state.getStorage(key, hash)
       return raw?.toHex() ?? '0x'
     },
-    [api, channelId],
+    [api],
   )
 
   const decodeAt = useCallback(
-    async (block: number, packedHex: string): Promise<ChangeItem> => {
-      // strip off the 8-byte LE nonce
+    async (ch: string, block: number, packedHex: string): Promise<ChangeItem> => {
       const raw = packedHex.startsWith('0x') ? packedHex.slice(2) : packedHex
       const nonce = Number(hexToBn(`0x${raw.slice(0, 16)}`, { isLe: true }).toString())
-
-      // now find the actual submit extrinsic in that block
       const hash = await api.rpc.chain.getBlockHash(block)
       const blockE = await api.rpc.chain.getBlock(hash)
       for (const extrinsic of blockE.block.extrinsics) {
@@ -183,26 +198,22 @@ const SnowbridgeInboundSubmit: React.FC<SnowbridgeInboundSubmitProps> = ({ api }
           const { eventLog } = (msg as any).toJSON()
           const decoded = iface.decodeEventLog('OutboundMessageAccepted', eventLog.data, eventLog.topics)
           const MAGIC = '0x70150038'
+          let messageType: any
           if (decoded.payload.startsWith(MAGIC)) {
-            const payload = api.registry.createType('Payload', decoded.payload)
-            return {
-              block,
-              nonce,
-              messageHex: payload.toHex(),
-              messageJson: payload.toJSON(),
-            }
+            messageType = api.registry.createType('Payload', decoded.payload)
+          } else {
+            messageType = api.registry.createType('VersionedXcmMessage', decoded.payload)
           }
-          const ver = api.registry.createType('VersionedXcmMessage', decoded.payload)
           return {
+            channel: ch,
             block,
             nonce,
-            messageHex: ver.toHex(),
-            messageJson: ver.toJSON(),
+            messageHex: messageType.toHex(),
+            messageJson: messageType.toJSON(),
           }
         }
       }
-      // no submit here
-      return { block, nonce, messageHex: '0x', messageJson: {} }
+      return { channel: ch, block, nonce, messageHex: '0x', messageJson: {} }
     },
     [api],
   )
@@ -212,7 +223,7 @@ const SnowbridgeInboundSubmit: React.FC<SnowbridgeInboundSubmitProps> = ({ api }
     if (!channelId) {
       return message.error('Select a channel')
     }
-    if (mode === 'number' && currentNonce === null) {
+    if (channelId !== '*' && currentNonce === null) {
       return message.error('Waiting on current nonce…')
     }
 
@@ -221,93 +232,74 @@ const SnowbridgeInboundSubmit: React.FC<SnowbridgeInboundSubmitProps> = ({ api }
 
     try {
       const headNum = (await api.query.system.number()).toNumber()
+      const results: ChangeItem[] = []
+      const targets = channelId === '*' ? channels : [channelId]
 
-      if (mode === 'change') {
-        // ───── block‐range mode ─────
-        const from = Math.max(0, headNum - BLOCK_WINDOW)
-        // binary‐search existing logic…
-        const results: ChangeItem[] = []
-        const lowHex = await readStorageAt(from)
-        const highHex = await readStorageAt(headNum)
+      for (const ch of targets) {
+        // ignore nonce when searching all channels
+        if (channelId === '*') {
+          const from = rangeStart || 0
+          const to = rangeEnd === undefined ? headNum : rangeEnd
+          const lowHex = await readStorageAt(ch, from)
+          const highHex = await readStorageAt(ch, to)
 
-        const walk = async (low: number, high: number, lowHex: string, highHex: string): Promise<void> => {
-          if (lowHex === highHex) return
-          if (high - low <= 1) {
-            const itm = await decodeAt(high, highHex)
-            results.push(itm)
-            results.sort((a, b) => b.block - a.block)
-            setChanges([...results])
-            return
-          }
-          const mid = Math.floor((low + high) / 2)
-          const midHex = await readStorageAt(mid)
-          await walk(mid, high, midHex, highHex)
-          await walk(low, mid, lowHex, midHex)
-        }
-
-        await walk(from, headNum, lowHex, highHex)
-        results.sort((a, b) => b.block - a.block)
-        setChanges(results)
-      } else {
-        // ───── nonce-range mode (binary search) ─────
-        const lowNonceBound = Math.max(0, currentNonce! - NONCE_WINDOW)
-        const highNonceBound = Math.max(0, currentNonce!)
-        const results: ChangeItem[] = []
-
-        // we search [0 … headNum], just like blocks
-        const from = 0
-        const lowHex = await readStorageAt(from)
-        const highHex = await readStorageAt(headNum)
-
-        const walkNonce = async (low: number, high: number, lowHex: string, highHex: string): Promise<void> => {
-          // decode the LE-nonce from each endpoint
-          const strip = (h: string) => (h.startsWith('0x') ? h.slice(2) : h)
-          const lowNonce = Number(hexToBn(`0x${strip(lowHex).slice(0, 16)}`, { isLe: true }).toString())
-          const highNonce = Number(hexToBn(`0x${strip(highHex).slice(0, 16)}`, { isLe: true }).toString())
-
-          // if even the HIGH end is ≤ our lower-nonce bound, nothing here can qualify
-          if (highNonce < lowNonceBound) {
-            return
-          }
-          if (lowNonce > highNonceBound) {
-            return
-          }
-
-          // no change at all → skip
-          if (lowHex === highHex) {
-            return
-          }
-
-          // adjacent → check it
-          if (high - low <= 1) {
-            const itm = await decodeAt(high, highHex)
-            if (itm.nonce > lowNonceBound) {
+          const walk = async (low: number, high: number, lowHexVal: string, highHexVal: string): Promise<void> => {
+            if (lowHexVal === highHexVal) return
+            if (high - low <= 1) {
+              const itm = await decodeAt(ch, high, highHexVal)
               results.push(itm)
-              results.sort((a, b) => b.block - a.block)
-              setChanges([...results])
+              setChanges([...results].sort((a, b) => b.block - a.block))
+              return
             }
-            return
+            const mid = Math.floor((low + high) / 2)
+            const midHex = await readStorageAt(ch, mid)
+            await walk(mid, high, midHex, highHexVal)
+            await walk(low, mid, lowHexVal, midHex)
           }
 
-          // otherwise split in two
-          const mid = Math.floor((low + high) / 2)
-          const midHex = await readStorageAt(mid)
-          await walkNonce(mid, high, midHex, highHex)
-          await walkNonce(low, mid, lowHex, midHex)
+          await walk(from, to, lowHex, highHex)
+        } else {
+          // nonce-based search only for specific channel
+          const lowNonceBound = nonceStart || 0
+          const highNonceBound = nonceEnd || currentNonce
+          const from = rangeStart || 0
+          const to = rangeEnd === undefined ? headNum : rangeEnd
+          const lowHex = await readStorageAt(ch, from)
+          const highHex = await readStorageAt(ch, to)
+
+          const walkNonce = async (low: number, high: number, lowHexVal: string, highHexVal: string): Promise<void> => {
+            const strip = (h: string) => (h.startsWith('0x') ? h.slice(2) : h)
+            const lowNonce = Number(hexToBn(`0x${strip(lowHexVal).slice(0, 16)}`, { isLe: true }).toString())
+            const highNonce = Number(hexToBn(`0x${strip(highHexVal).slice(0, 16)}`, { isLe: true }).toString())
+            if (highNonce < lowNonceBound || lowNonce > highNonceBound) return
+            if (lowHexVal === highHexVal) return
+            if (high - low <= 1) {
+              const itm = await decodeAt(ch, high, highHexVal)
+              if (itm.nonce > lowNonceBound) {
+                results.push(itm)
+                setChanges([...results].sort((a, b) => b.block - a.block))
+              }
+              return
+            }
+            const mid = Math.floor((low + high) / 2)
+            const midHex = await readStorageAt(ch, mid)
+            await walkNonce(mid, high, midHex, highHexVal)
+            await walkNonce(low, mid, lowHexVal, midHex)
+          }
+
+          console.log('Starting walkNonce. Bounds: ', lowNonceBound, highNonceBound)
+
+          await walkNonce(from, to, lowHex, highHex)
         }
-
-        await walkNonce(from, headNum, lowHex, highHex)
-
-        // final sort & render
-        results.sort((a, b) => b.block - a.block)
-        setChanges(results)
       }
+
+      setChanges(results.sort((a, b) => b.block - a.block))
     } catch (err: any) {
       message.error(err.message || 'Error fetching changes')
     } finally {
       setSearching(false)
     }
-  }, [api, channelId, mode, currentNonce, decodeAt, readStorageAt])
+  }, [api, channelId, currentNonce, channels, readStorageAt, decodeAt, nonceStart, nonceEnd, rangeStart, rangeEnd])
 
   // === RENDER ===
   return (
@@ -315,19 +307,23 @@ const SnowbridgeInboundSubmit: React.FC<SnowbridgeInboundSubmitProps> = ({ api }
       <Typography.Title level={4}>Snowbridge Inbound Changes</Typography.Title>
       <Form layout="vertical">
         <Row gutter={16} align="bottom">
-          {/* --- CHANNEL --- */}
           <Col span={8}>
             <Form.Item label="Channel">
-              <Select
-                value={channelId}
-                onChange={setChannelId}
-                placeholder="Select channel"
-                loading={!channels.length}
-                disabled={!channels.length}
-                style={{ width: '100%' }}
-              >
+              <Select value={channelId} onChange={setChannelId} style={{ width: '100%' }} loading={!channels.length}>
+                <Select.Option value="*">All Channels</Select.Option>
                 {channels.map((id) => (
                   <Select.Option key={id} value={id}>
+                    <span
+                      style={{
+                        display: 'inline-block',
+                        width: 10,
+                        height: 10,
+                        backgroundColor: getColor(id),
+                        marginRight: 8,
+                        borderRadius: 2,
+                        verticalAlign: 'middle',
+                      }}
+                    />
                     {id}
                   </Select.Option>
                 ))}
@@ -335,43 +331,42 @@ const SnowbridgeInboundSubmit: React.FC<SnowbridgeInboundSubmitProps> = ({ api }
             </Form.Item>
           </Col>
 
-          {/* --- MODE --- */}
-          <Col span={8}>
-            <Form.Item label="Search Mode">
-              <Radio.Group value={mode} onChange={(e) => setMode(e.target.value)}>
-                <Radio.Button value="change">Last Change</Radio.Button>
-                <Radio.Button value="number">By Number</Radio.Button>
-              </Radio.Group>
-            </Form.Item>
-          </Col>
-
-          {/* --- FIND BUTTON --- */}
           <Col span={8}>
             <Form.Item>
-              <Button type="primary" onClick={findAllChanges} loading={searching} disabled={!api || !channelId} block>
-                Find Recent Changes
+              <Button type="primary" onClick={findAllChanges} loading={searching} disabled={!channelId} block>
+                Find Messages
               </Button>
             </Form.Item>
           </Col>
         </Row>
-        {/* range display, constrained to max-width so it doesn’t span 100% */}
+
         <Row gutter={16}>
           <Col span={12}>
-            <Form.Item label={mode === 'change' ? 'Block Range' : 'Nonce Range'}>
+            <Form.Item label={'Block Range'}>
               <div style={{ maxWidth: 400 }}>
                 <Input.Group compact>
-                  <InputNumber
-                    style={{ width: '45%' }}
-                    value={
-                      mode === 'change'
-                        ? Math.max(0, head - BLOCK_WINDOW)
-                        : currentNonce !== null
-                          ? Math.max(0, currentNonce - NONCE_WINDOW)
-                          : undefined
-                    }
-                    readOnly
+                  <InputNumber style={{ width: '45%' }} value={rangeStart} onChange={setRangeStart} />
+                  <Input
+                    style={{ width: '45%', marginLeft: '10%' }}
+                    value={rangeEnd}
+                    onChange={(e) => setRangeEnd(e.target.value.trim())}
                   />
-                  <Input style={{ width: '45%', marginLeft: '10%' }} value="latest" readOnly />
+                </Input.Group>
+              </div>
+            </Form.Item>
+          </Col>
+        </Row>
+        <Row gutter={16}>
+          <Col span={12}>
+            <Form.Item label={'Nonce Range'}>
+              <div style={{ maxWidth: 400 }}>
+                <Input.Group compact>
+                  <InputNumber style={{ width: '45%' }} value={nonceStart} onChange={setNonceStart} />
+                  <Input
+                    style={{ width: '45%', marginLeft: '10%' }}
+                    value={nonceEnd}
+                    onChange={(e) => setNonceEnd(e.target.value.trim())}
+                  />
                 </Input.Group>
               </div>
             </Form.Item>
@@ -379,8 +374,7 @@ const SnowbridgeInboundSubmit: React.FC<SnowbridgeInboundSubmitProps> = ({ api }
         </Row>
       </Form>
 
-      {/* If no changes found (yet) show the current nonce */}
-      {currentNonce != null && (
+      {currentNonce != null && channelId !== '*' && (
         <Typography.Paragraph style={{ marginTop: 16 }}>
           <strong>Current Nonce:</strong> {currentNonce}
         </Typography.Paragraph>
@@ -392,9 +386,9 @@ const SnowbridgeInboundSubmit: React.FC<SnowbridgeInboundSubmitProps> = ({ api }
           bordered
           dataSource={changes}
           renderItem={(item) => (
-            <List.Item>
+            <List.Item style={{ borderLeft: `4px solid ${getColor(item.channel)}` }}>
               <List.Item.Meta
-                title={`Block #${item.block}`}
+                title={`Block #${item.block} — Channel ${item.channel}`}
                 description={
                   <>
                     <Typography.Text>Nonce: {item.nonce}</Typography.Text>
