@@ -33,40 +33,6 @@ function App() {
     setEndpoint(endpoint)
   }, [])
 
-  // This is an attempt to create the chopsticks wasm worker once the api is available
-  // Very buggy so avoid using if possible.
-  /*
-  const didRunRef = useRef(false);
-  const asyncAlive = useRef(null);
-  const startApi = useEffect(() => {
-  console.log("startApi", api, "endpoint", endpoint)
-    if (didRunRef.current) { return; }
-    // init wasm worker once
-    if (api && api?.query.system) {
-          didRunRef.current = true;
-          console.log("api and system truthy");
-    asyncAlive.current = (async () => { 
-          console.log("inside async func");
-	    const blockNumber = ((await api.query.system.number()) as any).toNumber()
-	    const chain = await setup({
-		endpoint,
-		block: blockNumber,
-		mockSignatureHost: true,
-		db: new IdbDatabase('cache'),
-		runtimeLogLevel: 5,
-	    })
-	    const rootOrigin = { system: 'Root' }
-	    const preimage = 0x0101
-	    const res = await chain.dryRunExtrinsic({
-          	call: preimage,
-          	address: rootOrigin,
-        	})
-	});
-	(asyncAlive.current)();
-    }
-  }, [api, endpoint, api?.query.system])
-  */
-
   const onDryRunPreimage = useCallback(
     (hex: string, origin?: any) => {
       const newKeys = [...activeKey].filter((key) => key === 'settings' || key === 'dryrun-preimage')
@@ -103,80 +69,48 @@ function App() {
       label: 'Preimages',
       children: api ? <Preimages api={api} onDryRunPreimage={onDryRunPreimage} /> : <Spin spinning={true} />,
     },
-    ...(api?.query.referenda
-      ? [
-          {
-            key: 'referenda',
-            label: 'Referenda',
-            children: api ? (
-              <Referenda api={api} onDryRunPreimage={onDryRunPreimage} referendaPallet="referenda" />
-            ) : (
-              <Spin spinning={true} />
-            ),
-          },
-        ]
-      : []),
-    ...(api?.query.fellowshipReferenda
-      ? [
-          {
-            key: 'fellowship-referenda',
-            label: 'Fellowship Referenda',
-            children: api?.query.fellowshipReferenda ? (
-              <Referenda api={api} onDryRunPreimage={onDryRunPreimage} referendaPallet="fellowshipReferenda" />
-            ) : (
-              <Spin spinning={true} />
-            ),
-          },
-        ]
-      : []),
-    ...(api?.query.democracy
-      ? [
-          {
-            key: 'democracy',
-            label: 'Democracy',
-            children: api ? <Democracy api={api} onDryRunPreimage={onDryRunPreimage} /> : <Spin spinning={true} />,
-          },
-        ]
-      : []),
-    ...(api?.query.generalCouncil
-      ? [
-          {
-            key: 'general-council',
-            label: 'Council',
-            children: api ? (
-              <Collectives api={api} onDryRunPreimage={onDryRunPreimage} collectivesPallet="generalCouncil" />
-            ) : (
-              <Spin spinning={true} />
-            ),
-          },
-        ]
-      : []),
-    ...(api?.query.council
-      ? [
-          {
-            key: 'council',
-            label: 'Council',
-            children: api ? (
-              <Collectives api={api} onDryRunPreimage={onDryRunPreimage} collectivesPallet="council" />
-            ) : (
-              <Spin spinning={true} />
-            ),
-          },
-        ]
-      : []),
-    ...(api?.query.technicalCommittee
-      ? [
-          {
-            key: 'technical-committee',
-            label: 'TechnicalCommittee',
-            children: api ? (
-              <Collectives api={api} onDryRunPreimage={onDryRunPreimage} collectivesPallet="technicalCommittee" />
-            ) : (
-              <Spin spinning={true} />
-            ),
-          },
-        ]
-      : []),
+    {
+      key: 'referenda',
+      label: 'Referenda',
+      children: api ? <Referenda api={api} onDryRunPreimage={onDryRunPreimage} referendaPallet="referenda" /> : <Spin spinning={true} />,
+    },
+    {
+      key: 'fellowship-referenda',
+      label: 'Fellowship Referenda',
+      children: api?.query.fellowshipReferenda ? (
+        <Referenda api={api} onDryRunPreimage={onDryRunPreimage} referendaPallet="fellowshipReferenda" />
+      ) : (
+        <Spin spinning={true} />
+      ),
+    },
+    {
+      key: 'democracy',
+      label: 'Democracy',
+      children: api ? <Democracy api={api} onDryRunPreimage={onDryRunPreimage} /> : <Spin spinning={true} />,
+    },
+    {
+      key: 'general-council',
+      label: 'Council',
+      children: api ? (
+        <Collectives api={api} onDryRunPreimage={onDryRunPreimage} collectivesPallet="generalCouncil" />
+      ) : (
+        <Spin spinning={true} />
+      ),
+    },
+    {
+      key: 'council',
+      label: 'Council',
+      children: api ? <Collectives api={api} onDryRunPreimage={onDryRunPreimage} collectivesPallet="council" /> : <Spin spinning={true} />,
+    },
+    {
+      key: 'technical-committee',
+      label: 'TechnicalCommittee',
+      children: api ? (
+        <Collectives api={api} onDryRunPreimage={onDryRunPreimage} collectivesPallet="technicalCommittee" />
+      ) : (
+        <Spin spinning={true} />
+      ),
+    },
     {
       key: 'dryrun-preimage',
       label: 'Dry Run Preimage',
