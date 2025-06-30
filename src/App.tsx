@@ -2,6 +2,7 @@ import { Collapse, type CollapseProps, Spin } from 'antd'
 import { useCallback, useState } from 'react'
 
 import type { ApiPromise } from '@polkadot/api'
+import BruteforceScaleDecoder from './BruteforceScaleDecoder'
 import Collectives from './Collectives'
 import ConsoleTerminal from './ConsoleTerminal'
 import DecodeKey from './DecodeKey'
@@ -16,6 +17,8 @@ import Settings from './Settings'
 import SnowbridgeInboundSubmit from './SnowbridgeInboundSubmit'
 import StateCall from './StateCall'
 import StorageKeyChangeFinder from './StorageKeyChangeFinder'
+import ValidatorQueries from './ValidatorQueries'
+import TestMetadata from './ViewMetadata'
 import WasmOptions from './WasmOptions'
 
 function App() {
@@ -218,6 +221,21 @@ function App() {
       key: 'snowbridge-inbound-submit',
       label: 'Snowbridge inbound messages (from ethereum)',
       children: api ? <SnowbridgeInboundSubmit api={api} /> : <Spin spinning={true} />,
+    },
+    {
+      key: 'test-validator-queries',
+      label: 'Test Validator Queries',
+      children: api ? <ValidatorQueries api={api} /> : <Spin spinning={true} />,
+    },
+    {
+      key: 'test-metadata',
+      label: 'Test Metadata',
+      children: api ? <TestMetadata api={api} /> : <Spin spinning={true} />,
+    },
+    {
+      key: 'bruteforce-scale-decoder',
+      label: 'Bruteforce SCALE Decoder',
+      children: api ? <BruteforceScaleDecoder api={api} /> : <Spin spinning={true} />,
     },
     {
       key: 'console',
