@@ -20,6 +20,7 @@ import StorageKeyChangeFinder from './StorageKeyChangeFinder'
 import ValidatorQueries from './ValidatorQueries'
 import TestMetadata from './ViewMetadata'
 import WasmOptions from './WasmOptions'
+import CollatorQueries from './CollatorQueries'
 
 function App() {
   const [api, setApi] = useState<ApiPromise>()
@@ -160,6 +161,11 @@ function App() {
       key: 'test-validator-queries',
       label: 'Test Validator Queries',
       children: api ? <ValidatorQueries api={api} /> : <Spin spinning={true} />,
+    },
+    {
+      key: 'test-collator-queries',
+      label: 'Test Collator Queries',
+      children: api ? <CollatorQueries api={api} /> : <Spin spinning={true} />,
     },
     {
       key: 'test-metadata',
