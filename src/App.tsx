@@ -3,6 +3,7 @@ import { useCallback, useState } from 'react'
 
 import type { ApiPromise } from '@polkadot/api'
 import BruteforceScaleDecoder from './BruteforceScaleDecoder'
+import CollatorQueries from './CollatorQueries'
 import Collectives from './Collectives'
 import ConsoleTerminal from './ConsoleTerminal'
 import DecodeKey from './DecodeKey'
@@ -20,7 +21,6 @@ import StorageKeyChangeFinder from './StorageKeyChangeFinder'
 import ValidatorQueries from './ValidatorQueries'
 import TestMetadata from './ViewMetadata'
 import WasmOptions from './WasmOptions'
-import CollatorQueries from './CollatorQueries'
 
 function App() {
   const [api, setApi] = useState<ApiPromise>()
@@ -190,5 +190,4 @@ function App() {
     </div>
   )
 }
-
 export default App
