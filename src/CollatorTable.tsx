@@ -30,55 +30,58 @@ const CollatorTable: React.FC<CollatorTableProps> = ({ api }) => {
   const [loading, setLoading] = useState(true)
   const [rows, setRows] = useState<CollatorRow[]>([])
   const [sessionIndex, setSessionIndex] = useState<number | null>(null)
-    const [blockNumber, setBlockNumber]   = useState<number | null>(null)
+  const [blockNumber, setBlockNumber] = useState<number | null>(null)
 
   // 1) our actual fetch, parameterized by the sessionIndex
   const fetchData = useCallback(async (idx: number) => {
     setLoading(true)
     try {
-            // get latest block number
+      // get latest block number
       const header = await api.rpc.chain.getHeader()
       setBlockNumber(header.number.toNumber())
 
-        const sessionIndex = (await api.query.session.currentIndex()).toNumber()
+      const sessionIndex = (await api.query.session.currentIndex()).toNumber()
 
-        // Fetch raw data
-        const collatorData: any = (await api.query.tanssiCollatorAssignment.collatorContainerChain()).toJSON()
-        const authorityData: any = (await api.query.tanssiAuthorityAssignment.collatorContainerChain(sessionIndex)).toJSON()
-        const authorityMapping: Record<string, string> = await api.query.tanssiAuthorityMapping.authorityIdMapping(sessionIndex).then((v: any) => v.toJSON())
-        const invulnerables: string[] = (await api.query.tanssiInvulnerables.invulnerables()).map((v: any) => v.toString())
-        const stakingCandidates: any[] = (await api.query.pooledStaking.sortedEligibleCandidates()).toJSON()
-        const registeredParaIds: number[] = (await api.query.containerRegistrar.registeredParaIds()).map((v: any) => v.toNumber())
+      // Fetch raw data
+      const collatorData: any = (await api.query.tanssiCollatorAssignment.collatorContainerChain()).toJSON()
+      const authorityData: any = (await api.query.tanssiAuthorityAssignment.collatorContainerChain(sessionIndex)).toJSON()
+      const authorityMapping: Record<string, string> = await api.query.tanssiAuthorityMapping
+        .authorityIdMapping(sessionIndex)
+        .then((v: any) => v.toJSON())
+      const invulnerables: string[] = (await api.query.tanssiInvulnerables.invulnerables()).map((v: any) => v.toString())
+      const stakingCandidates: any[] = (await api.query.pooledStaking.sortedEligibleCandidates()).toJSON()
+      const registeredParaIds: number[] = (await api.query.containerRegistrar.registeredParaIds()).map((v: any) => v.toNumber())
 
-              // Build a reverse map: address → authorityKey
+      // Build a reverse map: address → authorityKey
       const addressToAuthKey: Record<string, string> = {}
-      Object.entries(authorityMapping).forEach(([authKey, addr]) => {
+
+      for (const [authKey, addr] of Object.entries(authorityMapping)) {
         addressToAuthKey[addr] = authKey
-      })
+      }
 
-        // Extract containerChains
-        const activeChains: Record<string, string[]> = collatorData.containerChains || {}
-        const invSet = new Set(invulnerables)
-        const stakingSet = new Set(stakingCandidates)
+      // Extract containerChains
+      const activeChains: Record<string, string[]> = collatorData.containerChains || {}
+      const invSet = new Set(invulnerables)
+      const stakingSet = new Set(stakingCandidates)
 
-        // Build rows
-        const dataRows: CollatorRow[] = []
-        registeredParaIds.forEach((paraId) => {
-          const key = paraId.toString()
-          const addresses = activeChains[key] || []
-          addresses.forEach((address: string) => {
-            dataRows.push({
-              key: `${paraId}-${address}`,
-              paraId,
-              address,
-              authorityKey: addressToAuthKey[address] || '',
-              isInvulnerable: invSet.has(address),
-              isStaking: stakingSet.has(address),
-            })
+      // Build rows
+      const dataRows: CollatorRow[] = []
+      for (const paraId of registeredParaIds) {
+        const key = paraId.toString()
+        const addresses = activeChains[key] || []
+        for (const address of addresses) {
+          dataRows.push({
+            key: `${paraId}-${address}`,
+            paraId,
+            address,
+            authorityKey: addressToAuthKey[address] || '',
+            isInvulnerable: invSet.has(address),
+            isStaking: stakingSet.has(address),
           })
-        })
+        }
+      }
 
-              // enrich rows with alias: from hardcoded or on-chain identity
+      // enrich rows with alias: from hardcoded or on-chain identity
       const enriched: CollatorRow[] = await Promise.all(
         dataRows.map(async (r) => {
           let alias = ''
@@ -96,34 +99,35 @@ const CollatorTable: React.FC<CollatorTableProps> = ({ api }) => {
             }
           }
           return { ...r, alias }
-        })
+        }),
       )
 
-
-        setRows(enriched)
-      } catch (err: any) {
-        message.error(`Failed to load collator table: ${err.message}`)
-      } finally {
-        setLoading(false)
-      }
-    })
+      setRows(enriched)
+    } catch (err: any) {
+      message.error(`Failed to load collator table: ${err.message}`)
+    } finally {
+      setLoading(false)
+    }
+  })
 
   useEffect(() => {
     let unsub: () => void
 
-    api
-      .query
-      .session
+    api.query.session
       .currentIndex((idx) => {
         const next = idx.toNumber()
         if (next === sessionIndex) return
         setSessionIndex(next)
         fetchData(next)
       })
-      .then((u) => { unsub = u })
+      .then((u) => {
+        unsub = u
+      })
       .catch(console.error)
 
-    return () => { unsub && unsub() }
+    return () => {
+      unsub || unsub()
+    }
   }, [api, sessionIndex, fetchData])
 
   const columns: ColumnsType<CollatorRow> = [
@@ -141,10 +145,14 @@ const CollatorTable: React.FC<CollatorTableProps> = ({ api }) => {
       ellipsis: true,
     },
     {
-      title: 'Alias', dataIndex: 'alias', key: 'alias', render: (text) => text || '-', ellipsis: true,
+      title: 'Alias',
+      dataIndex: 'alias',
+      key: 'alias',
+      render: (text) => text || '-',
+      ellipsis: true,
     },
     {
-      title: 'Authority Key',           
+      title: 'Authority Key',
       dataIndex: 'authorityKey',
       key: 'authorityKey',
       render: (text) => <Typography.Text code>{text}</Typography.Text>,
@@ -179,22 +187,13 @@ const CollatorTable: React.FC<CollatorTableProps> = ({ api }) => {
       <Typography.Title level={4}>Current Collator Overview</Typography.Title>
       {/* session + block info up top */}
       <Typography.Paragraph>
-        <b>Session:</b>{' '}
-        {sessionIndex !== null ? sessionIndex : <Spin size="small" />}
-        {' '}|{' '}
-        <b>Block:</b>{' '}
+        <b>Session:</b> {sessionIndex !== null ? sessionIndex : <Spin size="small" />} | <b>Block:</b>{' '}
         {blockNumber !== null ? blockNumber : <Spin size="small" />}
       </Typography.Paragraph>
       {loading ? (
         <Spin />
       ) : (
-        <Table<CollatorRow>
-          columns={columns}
-          dataSource={rows}
-          rowKey="key"
-          pagination={{ pageSize: 10 }}
-          scroll={{ x: 'max-content' }}
-        />
+        <Table<CollatorRow> columns={columns} dataSource={rows} rowKey="key" pagination={{ pageSize: 10 }} scroll={{ x: 'max-content' }} />
       )}
     </Card>
   )

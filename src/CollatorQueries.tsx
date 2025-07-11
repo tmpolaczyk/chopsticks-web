@@ -3,7 +3,6 @@ import { Card, Spin, Typography, message } from 'antd'
 import React, { useState, useEffect } from 'react'
 import { JSONTree } from 'react-json-tree'
 import CollatorTable from './CollatorTable'
-
 export interface CollatorQueriesProps {
   api: ApiPromise
 }
@@ -21,7 +20,9 @@ const CollatorQueries: React.FC<CollatorQueriesProps> = ({ api }) => {
         // fetch collator assignments and mappings
         const collatorContainerChain: any[] = (await api.query.tanssiCollatorAssignment.collatorContainerChain()).toJSON()
         const pendingCollatorContainerChain: any[] = (await api.query.tanssiCollatorAssignment.pendingCollatorContainerChain()).toJSON()
-        const authoritiesCollatorContainerChain: any[] = (await api.query.tanssiAuthorityAssignment.collatorContainerChain(sessionIndex)).toJSON()
+        const authoritiesCollatorContainerChain: any[] = (
+          await api.query.tanssiAuthorityAssignment.collatorContainerChain(sessionIndex)
+        ).toJSON()
         const authorityMapping: any[] = (await api.query.tanssiAuthorityMapping.authorityIdMapping(sessionIndex)).toJSON()
         const invulnerables: any[] = (await api.query.tanssiInvulnerables.invulnerables()).toJSON()
         const stakingCandidates: any[] = (await api.query.pooledStaking.sortedEligibleCandidates()).toJSON()
@@ -37,7 +38,6 @@ const CollatorQueries: React.FC<CollatorQueriesProps> = ({ api }) => {
           stakingCandidates,
           registeredParaIds,
         })
-
       } catch (err: any) {
         message.error(`Error fetching collator data: ${err.message}`)
       } finally {
