@@ -2,11 +2,23 @@ import { ChopsticksProvider, setup } from '@acala-network/chopsticks-core'
 import { runTask, taskHandler } from '@acala-network/chopsticks-core'
 import { IdbDatabase } from '@acala-network/chopsticks-db/browser'
 import { ApiPromise } from '@polkadot/api'
-import { Button, Divider, Form, Input, Space, Spin, Typography } from 'antd'
+import {
+  Button,
+  Card,
+  Divider,
+  Form,
+  Input,
+  Space,
+  Spin,
+  Typography,
+} from 'antd'
 import React, { useCallback, useState } from 'react'
-
 import type { HexString } from '@polkadot/util/types'
+import { assert, isHex, u8aConcat, u8aEq, compactToU8a } from '@polkadot/util'
+import type { Call, ExtrinsicPayload } from '@polkadot/types/interfaces'
+import type { SubmittableExtrinsic } from '@polkadot/api/types'
 import { nanoid } from 'nanoid'
+import { JSONTree } from 'react-json-tree'
 import DiffViewer from './DiffViewer'
 import { decodeStorageDiff } from './helper'
 
@@ -21,33 +33,119 @@ type ExtrinsicInfo = {
   id: string
 }
 
-const ReplayBlock: React.FC<ReplayBlockProps> = ({ api, endpoint, wasmOverride }) => {
+// Extrinsic decoder from polkadot-js
+// https://github.com/polkadot-js/apps/blob/76ca1dbe9d07a47d4dfd49807620e8b7412cb680/packages/page-extrinsics/src/Decoder.tsx#L58
+/**
+ * Decode a hex‐encoded extrinsic (or call/payload) into a SubmittableExtrinsic
+ * using the API’s metadata.
+ */
+function decodeExtrinsic(
+  api: ApiPromise,
+  hex: string
+): SubmittableExtrinsic<'promise'> {
+  assert(isHex(hex), 'Expected a hex‑encoded call')
+
+  let extrinsicCall: Call
+  let extrinsicPayload: ExtrinsicPayload | null = null
+  let decoded: SubmittableExtrinsic<'promise'> | null = null
+
+  try {
+    // 1) Try as full signed/unsigned extrinsic
+    const tx = api.tx(hex)
+    assert(tx.toHex() === hex, 'Length mismatch when decoding as Extrinsic')
+    decoded = tx
+    extrinsicCall = api.createType('Call', decoded.method)
+  } catch {
+    // 2) Try as bare Call or as un‑prefixed payload
+    try {
+      extrinsicCall = api.createType('Call', hex)
+      const callHex = extrinsicCall.toHex()
+
+      if (callHex === hex) {
+        // plain Call
+      } else if (hex.startsWith(callHex)) {
+        // un‑prefixed payload: compact length + method + args
+        const prefixed = u8aConcat(
+          compactToU8a(extrinsicCall.encodedLength),
+          hex
+        )
+        extrinsicPayload = api.createType('ExtrinsicPayload', prefixed)
+        assert(
+          u8aEq(extrinsicPayload.toU8a(), prefixed),
+          'Mismatch decoding un‑prefixed payload'
+        )
+        extrinsicCall = api.createType(
+          'Call',
+          extrinsicPayload.method.toHex()
+        )
+      } else {
+        throw new Error('Call length mismatch')
+      }
+    } catch {
+      // 3) Fallback: treat as fully‑prefixed payload
+      extrinsicPayload = api.createType('ExtrinsicPayload', hex)
+      assert(
+        extrinsicPayload.toHex() === hex,
+        'Cannot decode as Call or ExtrinsicPayload'
+      )
+      extrinsicCall = api.createType(
+        'Call',
+        extrinsicPayload.method.toHex()
+      )
+    }
+  }
+
+  // Find the corresponding method on api.tx
+  const { method, section } = api.registry.findMetaCall(
+    extrinsicCall.callIndex
+  )
+  const extrinsicFn = (api.tx as any)[section][method]
+
+  // If we haven’t yet built a SubmittableExtrinsic, do so now
+  if (!decoded) {
+    decoded = extrinsicFn(...extrinsicCall.args)
+  }
+
+  return decoded
+}
+
+const ReplayBlock: React.FC<ReplayBlockProps> = ({
+  api,
+  endpoint,
+  wasmOverride,
+}) => {
   const [form] = Form.useForm()
-  const [message, setMessage] = useState<string>()
+  const [messageText, setMessageText] = useState<string>()
   const [isLoading, setIsLoading] = useState(false)
-  const [storageDiff, setStorageDiff] = useState<Awaited<ReturnType<typeof decodeStorageDiff>>>()
-  const [blockInfo, setBlockInfo] = useState<{ number: number; hash: string } | null>(null)
-  const [blockExtrinsics, setBlockExtrinsics] = useState<ExtrinsicInfo[] | null>(null)
+  const [storageDiff, setStorageDiff] = useState<
+    Awaited<ReturnType<typeof decodeStorageDiff>>
+  >()
+  const [blockInfo, setBlockInfo] = useState<{ number: number; hash: string } | null>(
+    null
+  )
+  const [blockExtrinsics, setBlockExtrinsics] = useState<ExtrinsicInfo[] | null>(
+    null
+  )
+  const [decodedExtrinsics, setDecodedExtrinsics] = useState<any[] | null>(
+    null
+  )
 
   const onFinish = useCallback(
     async (values: any) => {
-      const { extrinsics, dmp, ump, hrmp, blockNumber } = values
-
       setIsLoading(true)
+      setMessageText('Initializing…')
       setStorageDiff(undefined)
-      setMessage('Starting')
       setBlockInfo(null)
       setBlockExtrinsics(null)
+      setDecodedExtrinsics(null)
 
-      // Use user-provided block number or fallback to latest
-      let targetBlock: any
-      if (blockNumber === 'latest') {
-        const bn = ((await api.query.system.number()) as any).toNumber()
-        targetBlock = bn
-      } else {
-        targetBlock = blockNumber
-      }
+      // 1) pick block
+      const targetBlock =
+        values.blockNumber === 'latest'
+          ? ((await api.query.system.number()) as any).toNumber()
+          : Number(values.blockNumber)
 
+      // 2) start Chopsticks
       const chain = await setup({
         endpoint,
         block: targetBlock,
@@ -55,282 +153,152 @@ const ReplayBlock: React.FC<ReplayBlockProps> = ({ api, endpoint, wasmOverride }
         db: new IdbDatabase('cache'),
         runtimeLogLevel: 5,
       })
+      setMessageText('Chopsticks ready')
 
-      setMessage('Chopsticks instance created')
+      // 3) fetch header & set info
+      const head = await chain.head.header
+      setBlockInfo({ number: head.number.toNumber(), hash: head.hash.toHex() })
 
-      const header = await chain.head.header
-      const block = chain.head
-
-      // set number & hash
-      setBlockInfo({
-        number: header.number.toNumber(),
-        hash: header.hash.toHex(),
+      // 4) get raw hex extrinsics
+      const rawExts = await chain.head.extrinsics
+      const infos = rawExts.map((ext) => {
+        const hex = typeof ext === 'string' ? ext : ext.toHex()
+        return { id: nanoid(), hex }
       })
+      setBlockExtrinsics(infos)
 
-      // fetch and stringify extrinsics
-      const rawExts = await block.extrinsics
-      setBlockExtrinsics(
-        rawExts.map((ext) => {
-          // each ext may already be hex-string or offer toHex()
-          const hex = typeof ext === 'string' ? ext : ext.toHex()
-          const id = nanoid()
-
-          return { id, hex }
-        }),
+      // 5) decode each via our helper
+      const decoded = infos.map(({ hex }) =>
+        decodeExtrinsic(api, hex).toHuman()
       )
+      setDecodedExtrinsics(decoded)
 
+      // 6) run dry‑run & diff (unchanged)
       const dryRun = async () => {
         try {
-          // Copy the run-block logic from cli code:
-          // https://github.com/AcalaNetwork/chopsticks/blob/5fb31092a879c1a1ac712b7b24bd9fa91f0bee53/packages/chopsticks/src/plugins/run-block/cli.ts
-          // We cannot use buildBlock because that will automatically add inherents, so we will have 2x each inherent
-
           const header = await chain.head.header
           const block = chain.head
           const parent = await block.parentBlock
-          if (!parent) throw Error('cant find parent block')
+          if (!parent) throw new Error('No parent block')
 
           if (wasmOverride) {
-            // Helper: convert Uint8Array to hex string
-            function u8aToHex(u8a: Uint8Array): string {
-              return `0x${Array.from(u8a)
+            const buf = new Uint8Array(await wasmOverride.arrayBuffer())
+            const wasmHex =
+              '0x' +
+              Array.from(buf)
                 .map((b) => b.toString(16).padStart(2, '0'))
-                .join('')}`
-            }
-            console.log('Installing wasm override', wasmOverride)
-            const buffer = new Uint8Array(await wasmOverride.arrayBuffer())
-            console.log('buffer[0..10]:', JSON.stringify(buffer.slice(0, 10)))
-            const wasmHex = u8aToHex(buffer)
-            console.log('wasmHex[0..10]:', JSON.stringify(wasmHex.slice(0, 10)))
-            const block = parent
-            if (!block) throw new Error(`Cannot find block ${at}`)
-            block.setWasm(wasmHex as HexString)
+                .join('')
+            parent.setWasm(wasmHex as HexString)
           }
 
           const wasm = await parent.wasm
-
-          const calls: [string, HexString[]][] = [['Core_initialize_block', [header.toHex()]]]
-
-          for (const extrinsic of await block.extrinsics) {
-            calls.push(['BlockBuilder_apply_extrinsic', [extrinsic]])
-          }
-
-          calls.push(['BlockBuilder_finalize_block', []])
+          const calls: [string, HexString[]][] = [
+            ['Core_initialize_block', [header.toHex()]],
+            ...rawExts.map((ext) => [
+              'BlockBuilder_apply_extrinsic',
+              [typeof ext === 'string' ? ext : ext.toHex()],
+            ] as [string, HexString[]]),
+            ['BlockBuilder_finalize_block', []],
+          ]
 
           const result = await runTask(
-            {
-              wasm,
-              calls,
-              mockSignatureHost: false,
-              allowUnresolvedImports: false,
-              runtimeLogLevel: 5,
-            },
-            taskHandler(parent),
+            { wasm, calls, mockSignatureHost: false, allowUnresolvedImports: false, runtimeLogLevel: 5 },
+            taskHandler(parent)
           )
-
-          if ('Error' in result) {
-            throw new Error(result.Error)
-          }
-
-          /*
-          const umpMessages: Record<number, any> = {}
-          for (const item of ump ?? []) {
-            umpMessages[item.paraId] = umpMessages[item.paraId] ?? []
-            umpMessages[item.paraId].push(item.message)
-          }
-          const hrmpMessages: Record<number, any> = {}
-          for (const item of hrmp ?? []) {
-            hrmpMessages[item.paraId] = hrmpMessages[item.paraId] ?? []
-            hrmpMessages[item.paraId].push({
-              sendAt: item.sendAt,
-              data: item.message,
-            })
-          }
-          */
-
-          setMessage('Dry run completed. Preparing diff...')
-
-          const diff = result.Call.storageDiff
-
-          return await decodeStorageDiff(parent, diff)
+          if ('Error' in result) throw new Error(result.Error)
+          return await decodeStorageDiff(parent, result.Call.storageDiff)
         } catch (e: any) {
           console.error(e)
           return undefined
         }
       }
 
-      const dryRunDiff = await dryRun()
-      if (dryRunDiff) {
-        setStorageDiff(dryRunDiff)
-
-        const provider = new ChopsticksProvider(chain)
-        const chopsticksApi = new ApiPromise({ provider, noInitWarn: true })
-
-        console.log('Chopsticks chain', chain)
-        console.log('Last head', chain.head)
-        console.log('Chopsticks api', chopsticksApi)
-
-        setMessage('')
+      setMessageText('Running dry‑run…')
+      const diff = await dryRun()
+      if (diff) {
+        setStorageDiff(diff)
+        setMessageText('')
       } else {
-        setMessage('Invalid parameters')
+        setMessageText('Dry‑run failed')
       }
 
       setIsLoading(false)
     },
-    [api.query.system, endpoint, wasmOverride],
+    [api, endpoint, wasmOverride]
   )
 
   return (
     <div>
-      <Form form={form} onFinish={onFinish} disabled={isLoading} initialValues={{ blockNumber: 'latest' }}>
-        <Form.Item label="Block Number" name="blockNumber" tooltip="Enter block to replay (defaults to latest)">
-          <Input style={{ width: '100%' }} />
+      <Form
+        form={form}
+        onFinish={onFinish}
+        initialValues={{ blockNumber: 'latest' }}
+        disabled={isLoading}
+      >
+        <Form.Item
+          label="Block Number"
+          name="blockNumber"
+          tooltip="Use 'latest' or specify a block number"
+        >
+          <Input style={{ width: 200 }} />
         </Form.Item>
 
-        <Form.Item label="Extrinsics">
-          <Form.List name="extrinsics">
-            {(fields, { add, remove }) => (
-              <>
-                {fields.map((field, index) => (
-                  <Form.Item key={field.key} required>
-                    <Input style={{ width: '85%' }} placeholder="Encoded extrinsic" required />
-                    <Button type="link" onClick={() => remove(index)}>
-                      Remove
-                    </Button>
-                  </Form.Item>
-                ))}
-                <Form.Item>
-                  <Button type="dashed" onClick={() => add()} block>
-                    Add Extrinsic
-                  </Button>
-                </Form.Item>
-              </>
-            )}
-          </Form.List>
-        </Form.Item>
-        <Form.Item label="DMP">
-          <Form.List name="dmp">
-            {(fields, { add, remove }) => (
-              <>
-                {fields.map((field, index) => (
-                  <Form.Item key={field.key} required>
-                    <Space.Compact block>
-                      <Form.Item name={[field.name, 'sendAt']} noStyle required>
-                        <Input type="number" style={{ width: '15%' }} placeholder="SendAt" required />
-                      </Form.Item>
-                      <Form.Item name={[field.name, 'message']} noStyle required>
-                        <Input style={{ width: '85%' }} placeholder="Encoded message" required />
-                      </Form.Item>
-                    </Space.Compact>
-                    <Button type="link" onClick={() => remove(index)}>
-                      Remove
-                    </Button>
-                  </Form.Item>
-                ))}
-                <Form.Item>
-                  <Button type="dashed" onClick={() => add()} block>
-                    Add DMP Item
-                  </Button>
-                </Form.Item>
-              </>
-            )}
-          </Form.List>
-        </Form.Item>
-        <Form.Item label="UMP">
-          <Form.List name="ump">
-            {(fields, { add, remove }) => (
-              <>
-                {fields.map((field, index) => (
-                  <Form.Item key={field.key} required>
-                    <Space.Compact block>
-                      <Form.Item name={[field.name, 'paraId']} noStyle required>
-                        <Input type="number" style={{ width: '15%' }} placeholder="ParaId" required />
-                      </Form.Item>
-                      <Form.Item name={[field.name, 'message']} noStyle required>
-                        <Input style={{ width: '85%' }} placeholder="Encoded message" required />
-                      </Form.Item>
-                    </Space.Compact>
-                    <Button type="link" onClick={() => remove(index)}>
-                      Remove
-                    </Button>
-                  </Form.Item>
-                ))}
-                <Form.Item>
-                  <Button type="dashed" onClick={() => add()} block>
-                    Add UMP Item
-                  </Button>
-                </Form.Item>
-              </>
-            )}
-          </Form.List>
-        </Form.Item>
-        <Form.Item label="HRMP">
-          <Form.List name="hrmp">
-            {(fields, { add, remove }) => (
-              <>
-                {fields.map((field, index) => (
-                  <Form.Item key={field.key} required>
-                    <Space.Compact block>
-                      <Form.Item name={[field.name, 'paraId']} noStyle required>
-                        <Input type="number" style={{ width: '15%' }} placeholder="ParaId" required />
-                      </Form.Item>
-                      <Form.Item name={[field.name, 'sendAt']} noStyle required>
-                        <Input type="number" style={{ width: '15%' }} placeholder="SendAt" required />
-                      </Form.Item>
-                      <Form.Item name={[field.name, 'message']} noStyle required>
-                        <Input style={{ width: '70%' }} placeholder="Encoded message" required />
-                      </Form.Item>
-                    </Space.Compact>
-                    <Button type="link" onClick={() => remove(index)}>
-                      Remove
-                    </Button>
-                  </Form.Item>
-                ))}
-                <Form.Item>
-                  <Button type="dashed" onClick={() => add()} block>
-                    Add HRMP Item
-                  </Button>
-                </Form.Item>
-              </>
-            )}
-          </Form.List>
-        </Form.Item>
         <Form.Item>
           <Button type="primary" htmlType="submit">
             Run
           </Button>
         </Form.Item>
+
         <Form.Item>
-          <Spin spinning={isLoading} />
-          &nbsp;&nbsp;
-          <Typography.Text>{message}</Typography.Text>
+          <Space>
+            <Spin spinning={isLoading} />
+            <Typography.Text>{messageText}</Typography.Text>
+          </Space>
         </Form.Item>
+
         {blockInfo && (
           <Form.Item>
             <Space direction="vertical">
               <Typography.Text strong>Block #:</Typography.Text>
               <Typography.Text>{blockInfo.number}</Typography.Text>
-              <Typography.Text strong>Block hash:</Typography.Text>
+              <Typography.Text strong>Hash:</Typography.Text>
               <Typography.Text code>{blockInfo.hash}</Typography.Text>
             </Space>
           </Form.Item>
         )}
+
         {blockExtrinsics && (
-          <Form.Item label="Extrinsics">
+          <Form.Item label="Extrinsics (hex)" style={{ marginBottom: 0 }}>
             {blockExtrinsics.map((ext) => (
-              <Form.Item key={ext.id} required style={{ marginBottom: 8 }}>
-                <Input style={{ width: '85%' }} value={ext.hex} readOnly />
+              <Form.Item key={ext.id} style={{ marginBottom: 8 }}>
+                <Input value={ext.hex} readOnly style={{ width: '100%' }} />
               </Form.Item>
             ))}
           </Form.Item>
         )}
       </Form>
+
       <Divider />
+
+      {decodedExtrinsics && (
+        <Card size="small" title="Decoded Extrinsics">
+          <div style={{ maxHeight: 400, overflow: 'auto' }}>
+            <JSONTree
+              data={decodedExtrinsics}
+              hideRoot={false}
+              shouldExpandNodeInitially={(keyPath) => keyPath.length <= 2}
+              theme="monokai"
+              invertTheme={true}
+            />
+          </div>
+        </Card>
+      )}
+
+      <Divider />
+
       {storageDiff && <DiffViewer {...storageDiff} />}
     </div>
   )
 }
 
-const ReplayBlockFC = React.memo(ReplayBlock)
-
-export default ReplayBlockFC
+export default React.memo(ReplayBlock)
