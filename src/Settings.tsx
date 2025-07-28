@@ -1,6 +1,6 @@
 import { ApiPromise, WsProvider } from '@polkadot/api'
 import useLocalStorage from '@rehooks/local-storage'
-import { AutoComplete, Button, Form, Typography } from 'antd'
+import { AutoComplete, Button, Form, List, Progress, Space, Typography, message } from 'antd'
 import _ from 'lodash'
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
@@ -38,18 +38,75 @@ export type SettingsProps = {
 }
 
 const Settings: React.FC<SettingsProps> = ({ onConnect }) => {
+  const [form] = Form.useForm()
   const [endpoint, setEndpoint] = useLocalStorage('endpoint')
   const [searchParams, setSearchParams] = useSearchParams()
   const [api, setApi] = useState<ApiPromise>()
   const [connectionStatus, setConnectionStatus] = useState<string>()
+  const [scanning, setScanning] = useState(false)
+  const [foundEndpoints, setFoundEndpoints] = useState<string[]>([])
+  const [scannedCount, setScannedCount] = useState(0)
 
+  const totalPorts = 65535
   const endpointOptions = useMemo(() => {
-    const endpointOptions = new Set(endpoints)
-    if (endpoint != null) {
-      endpointOptions.add(endpoint)
+    const opts = new Set<string>([...endpoints, ...(endpoint ? [endpoint] : []), ...foundEndpoints])
+    return Array.from(opts).map((e) => ({ value: e }))
+  }, [endpoint, foundEndpoints])
+
+  const checkPort = useCallback((port: number): Promise<boolean> => {
+    return new Promise((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}`)
+      const timeout = window.setTimeout(() => {
+        ws.close()
+        resolve(false)
+      }, 1000)
+      ws.onopen = () => {
+        clearTimeout(timeout)
+        ws.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'system_health', params: [] }))
+      }
+      ws.onmessage = (event) => {
+        clearTimeout(timeout)
+        ws.close()
+        try {
+          const data = JSON.parse(event.data)
+          if (data.jsonrpc === '2.0') resolve(true)
+          else resolve(false)
+        } catch {
+          resolve(false)
+        }
+      }
+      ws.onerror = () => {
+        clearTimeout(timeout)
+        resolve(false)
+      }
+    })
+  }, [])
+
+  const scanLocalPorts = useCallback(async () => {
+    setScanning(true)
+    setFoundEndpoints([])
+    setScannedCount(0)
+    const found: string[] = []
+    // TODO: this is slow and the list is not lazy, it waits until the scan is complete to show the list
+    //const ports = Array.from({ length: totalPorts }, (_, i) => i + 1);
+    const ports = Array.from({ length: 100 }, (_, i) => i + 9900)
+    const concurrency = 100
+    for (let i = 0; i < ports.length; i += concurrency) {
+      const slice = ports.slice(i, i + concurrency)
+      const results = await Promise.all(slice.map(checkPort))
+      results.forEach((isRpc, idx) => {
+        if (isRpc) found.push(`ws://127.0.0.1:${slice[idx]}`)
+      })
+      setScannedCount((prev) => prev + slice.length)
     }
-    return Array.from(endpointOptions).map((endpoint) => ({ value: endpoint }))
-  }, [endpoint])
+    setFoundEndpoints(found)
+    setScanning(false)
+    if (found.length > 0) {
+      message.success(`Found ${found.length} JSON-RPC endpoints`)
+    } else {
+      message.warning('No JSON-RPC endpoints found on localhost')
+    }
+  }, [checkPort])
 
   const onFinish = useCallback(
     async (values: any) => {
@@ -115,27 +172,57 @@ const Settings: React.FC<SettingsProps> = ({ onConnect }) => {
     searchParams.set('endpoint', endpoint!)
     setSearchParams(searchParams)
   }, [endpoint, searchParams, setSearchParams])
+  const progress = Math.min(100, Math.round((scannedCount / totalPorts) * 100))
 
   return (
-    <Form layout="inline" onFinish={onFinish}>
-      <Form.Item
-        label="endpoint"
-        name="endpoint"
-        required
-        initialValue={endpoint ?? endpoints[0]}
-        rules={[{ pattern: /^wss?:\/\//, message: 'Not a valid WebSocket endpoint' }]}
-      >
-        <AutoComplete style={{ minWidth: 300 }} options={endpointOptions} />
-      </Form.Item>
-      <Form.Item>
-        <Button type="primary" htmlType="submit">
-          Connect
+    <>
+      <Form form={form} layout="inline" onFinish={onFinish}>
+        <Form.Item
+          label="endpoint"
+          name="endpoint"
+          required
+          initialValue={endpoint ?? endpoints[0]}
+          rules={[{ pattern: /^wss?:\/\//, message: 'Not a valid WebSocket endpoint' }]}
+        >
+          <AutoComplete style={{ minWidth: 300 }} options={endpointOptions} />
+        </Form.Item>
+        <Form.Item>
+          <Button type="primary" htmlType="submit">
+            Connect
+          </Button>
+        </Form.Item>
+        <Form.Item>
+          <Typography.Text>{connectionStatus}</Typography.Text>
+        </Form.Item>
+      </Form>
+
+      {/* Scan section on new line */}
+      <Space direction="vertical" style={{ width: '100%', marginTop: 16 }}>
+        <Button type="default" onClick={scanLocalPorts} loading={scanning} block>
+          {scanning ? 'Scanning...' : 'Scan Local RPC'}
         </Button>
-      </Form.Item>
-      <Form.Item>
-        <Typography.Text>{connectionStatus}</Typography.Text>
-      </Form.Item>
-    </Form>
+        {scanning && <Progress percent={progress} />}
+        {foundEndpoints.length > 0 && (
+          <List
+            header={<Typography.Text>Found Endpoints</Typography.Text>}
+            bordered
+            dataSource={foundEndpoints}
+            renderItem={(ep) => (
+              <List.Item>
+                <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                  <Typography.Text ellipsis style={{ maxWidth: 400 }}>
+                    {ep}
+                  </Typography.Text>
+                  <Button type="link" onClick={() => onFinish({ endpoint: ep })}>
+                    Connect
+                  </Button>
+                </Space>
+              </List.Item>
+            )}
+          />
+        )}
+      </Space>
+    </>
   )
 }
 
