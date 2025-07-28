@@ -1,26 +1,19 @@
-import { ChopsticksProvider, setup } from '@acala-network/chopsticks-core'
+import { setup } from '@acala-network/chopsticks-core'
 import { runTask, taskHandler } from '@acala-network/chopsticks-core'
 import { IdbDatabase } from '@acala-network/chopsticks-db/browser'
-import { ApiPromise } from '@polkadot/api'
-import {
-  Button,
-  Card,
-  Divider,
-  Form,
-  Input,
-  Space,
-  Spin,
-  Typography,
-} from 'antd'
-import React, { useCallback, useState } from 'react'
-import type { HexString } from '@polkadot/util/types'
-import { assert, isHex, u8aConcat, u8aEq, compactToU8a } from '@polkadot/util'
-import type { Call, ExtrinsicPayload } from '@polkadot/types/interfaces'
+import type { ApiPromise } from '@polkadot/api'
 import type { SubmittableExtrinsic } from '@polkadot/api/types'
+import type { Call, ExtrinsicPayload } from '@polkadot/types/interfaces'
+import { assert, compactToU8a, isHex, u8aConcat, u8aEq } from '@polkadot/util'
+import type { HexString } from '@polkadot/util/types'
+import { Button, Card, Collapse, Divider, Form, Input, Space, Spin, Typography } from 'antd'
 import { nanoid } from 'nanoid'
+import React, { useCallback, useState } from 'react'
 import { JSONTree } from 'react-json-tree'
 import DiffViewer from './DiffViewer'
 import { decodeStorageDiff } from './helper'
+
+const { Panel } = Collapse
 
 export type ReplayBlockProps = {
   api: ApiPromise
@@ -39,10 +32,7 @@ type ExtrinsicInfo = {
  * Decode a hex‐encoded extrinsic (or call/payload) into a SubmittableExtrinsic
  * using the API’s metadata.
  */
-function decodeExtrinsic(
-  api: ApiPromise,
-  hex: string
-): SubmittableExtrinsic<'promise'> {
+function decodeExtrinsic(api: ApiPromise, hex: string): SubmittableExtrinsic<'promise'> {
   assert(isHex(hex), 'Expected a hex‑encoded call')
 
   let extrinsicCall: Call
@@ -65,40 +55,23 @@ function decodeExtrinsic(
         // plain Call
       } else if (hex.startsWith(callHex)) {
         // un‑prefixed payload: compact length + method + args
-        const prefixed = u8aConcat(
-          compactToU8a(extrinsicCall.encodedLength),
-          hex
-        )
+        const prefixed = u8aConcat(compactToU8a(extrinsicCall.encodedLength), hex)
         extrinsicPayload = api.createType('ExtrinsicPayload', prefixed)
-        assert(
-          u8aEq(extrinsicPayload.toU8a(), prefixed),
-          'Mismatch decoding un‑prefixed payload'
-        )
-        extrinsicCall = api.createType(
-          'Call',
-          extrinsicPayload.method.toHex()
-        )
+        assert(u8aEq(extrinsicPayload.toU8a(), prefixed), 'Mismatch decoding un‑prefixed payload')
+        extrinsicCall = api.createType('Call', extrinsicPayload.method.toHex())
       } else {
         throw new Error('Call length mismatch')
       }
     } catch {
       // 3) Fallback: treat as fully‑prefixed payload
       extrinsicPayload = api.createType('ExtrinsicPayload', hex)
-      assert(
-        extrinsicPayload.toHex() === hex,
-        'Cannot decode as Call or ExtrinsicPayload'
-      )
-      extrinsicCall = api.createType(
-        'Call',
-        extrinsicPayload.method.toHex()
-      )
+      assert(extrinsicPayload.toHex() === hex, 'Cannot decode as Call or ExtrinsicPayload')
+      extrinsicCall = api.createType('Call', extrinsicPayload.method.toHex())
     }
   }
 
   // Find the corresponding method on api.tx
-  const { method, section } = api.registry.findMetaCall(
-    extrinsicCall.callIndex
-  )
+  const { method, section } = api.registry.findMetaCall(extrinsicCall.callIndex)
   const extrinsicFn = (api.tx as any)[section][method]
 
   // If we haven’t yet built a SubmittableExtrinsic, do so now
@@ -109,26 +82,14 @@ function decodeExtrinsic(
   return decoded
 }
 
-const ReplayBlock: React.FC<ReplayBlockProps> = ({
-  api,
-  endpoint,
-  wasmOverride,
-}) => {
+const ReplayBlock: React.FC<ReplayBlockProps> = ({ api, endpoint, wasmOverride }) => {
   const [form] = Form.useForm()
   const [messageText, setMessageText] = useState<string>()
   const [isLoading, setIsLoading] = useState(false)
-  const [storageDiff, setStorageDiff] = useState<
-    Awaited<ReturnType<typeof decodeStorageDiff>>
-  >()
-  const [blockInfo, setBlockInfo] = useState<{ number: number; hash: string } | null>(
-    null
-  )
-  const [blockExtrinsics, setBlockExtrinsics] = useState<ExtrinsicInfo[] | null>(
-    null
-  )
-  const [decodedExtrinsics, setDecodedExtrinsics] = useState<any[] | null>(
-    null
-  )
+  const [storageDiff, setStorageDiff] = useState<Awaited<ReturnType<typeof decodeStorageDiff>>>()
+  const [blockInfo, setBlockInfo] = useState<{ number: number; hash: string } | null>(null)
+  const [blockExtrinsics, setBlockExtrinsics] = useState<ExtrinsicInfo[] | null>(null)
+  const [decodedExtrinsics, setDecodedExtrinsics] = useState<any[] | null>(null)
 
   const onFinish = useCallback(
     async (values: any) => {
@@ -141,9 +102,7 @@ const ReplayBlock: React.FC<ReplayBlockProps> = ({
 
       // 1) pick block
       const targetBlock =
-        values.blockNumber === 'latest'
-          ? ((await api.query.system.number()) as any).toNumber()
-          : Number(values.blockNumber)
+        values.blockNumber === 'latest' ? ((await api.query.system.number()) as any).toNumber() : Number(values.blockNumber)
 
       // 2) start Chopsticks
       const chain = await setup({
@@ -168,9 +127,9 @@ const ReplayBlock: React.FC<ReplayBlockProps> = ({
       setBlockExtrinsics(infos)
 
       // 5) decode each via our helper
-      const decoded = infos.map(({ hex }) =>
-        decodeExtrinsic(api, hex).toHuman()
-      )
+      const decoded = infos.map(({ hex }) => {
+        return { ...decodeExtrinsic(api, hex).toHuman(), hex: { hex } }
+      })
       setDecodedExtrinsics(decoded)
 
       // 6) run dry‑run & diff (unchanged)
@@ -183,27 +142,24 @@ const ReplayBlock: React.FC<ReplayBlockProps> = ({
 
           if (wasmOverride) {
             const buf = new Uint8Array(await wasmOverride.arrayBuffer())
-            const wasmHex =
-              '0x' +
-              Array.from(buf)
-                .map((b) => b.toString(16).padStart(2, '0'))
-                .join('')
+            const wasmHex = `0x${Array.from(buf)
+              .map((b) => b.toString(16).padStart(2, '0'))
+              .join('')}`
             parent.setWasm(wasmHex as HexString)
           }
 
           const wasm = await parent.wasm
           const calls: [string, HexString[]][] = [
             ['Core_initialize_block', [header.toHex()]],
-            ...rawExts.map((ext) => [
-              'BlockBuilder_apply_extrinsic',
-              [typeof ext === 'string' ? ext : ext.toHex()],
-            ] as [string, HexString[]]),
+            ...rawExts.map(
+              (ext) => ['BlockBuilder_apply_extrinsic', [typeof ext === 'string' ? ext : ext.toHex()]] as [string, HexString[]],
+            ),
             ['BlockBuilder_finalize_block', []],
           ]
 
           const result = await runTask(
             { wasm, calls, mockSignatureHost: false, allowUnresolvedImports: false, runtimeLogLevel: 5 },
-            taskHandler(parent)
+            taskHandler(parent),
           )
           if ('Error' in result) throw new Error(result.Error)
           return await decodeStorageDiff(parent, result.Call.storageDiff)
@@ -224,22 +180,13 @@ const ReplayBlock: React.FC<ReplayBlockProps> = ({
 
       setIsLoading(false)
     },
-    [api, endpoint, wasmOverride]
+    [api, endpoint, wasmOverride],
   )
 
   return (
     <div>
-      <Form
-        form={form}
-        onFinish={onFinish}
-        initialValues={{ blockNumber: 'latest' }}
-        disabled={isLoading}
-      >
-        <Form.Item
-          label="Block Number"
-          name="blockNumber"
-          tooltip="Use 'latest' or specify a block number"
-        >
+      <Form form={form} onFinish={onFinish} initialValues={{ blockNumber: 'latest' }} disabled={isLoading}>
+        <Form.Item label="Block Number" name="blockNumber" tooltip="Use 'latest' or specify a block number">
           <Input style={{ width: 200 }} />
         </Form.Item>
 
@@ -266,16 +213,6 @@ const ReplayBlock: React.FC<ReplayBlockProps> = ({
             </Space>
           </Form.Item>
         )}
-
-        {blockExtrinsics && (
-          <Form.Item label="Extrinsics (hex)" style={{ marginBottom: 0 }}>
-            {blockExtrinsics.map((ext) => (
-              <Form.Item key={ext.id} style={{ marginBottom: 8 }}>
-                <Input value={ext.hex} readOnly style={{ width: '100%' }} />
-              </Form.Item>
-            ))}
-          </Form.Item>
-        )}
       </Form>
 
       <Divider />
@@ -283,13 +220,25 @@ const ReplayBlock: React.FC<ReplayBlockProps> = ({
       {decodedExtrinsics && (
         <Card size="small" title="Decoded Extrinsics">
           <div style={{ maxHeight: 400, overflow: 'auto' }}>
-            <JSONTree
-              data={decodedExtrinsics}
-              hideRoot={false}
-              shouldExpandNodeInitially={(keyPath) => keyPath.length <= 2}
-              theme="monokai"
-              invertTheme={true}
-            />
+            <Collapse accordion bordered={false} expandIconPosition="right">
+              {decodedExtrinsics.map((item, idx) => {
+                // Pull out method name (toHuman gives .method) or fallback
+                const methodName = `${item.method.section}.${item.method.method}`
+                return (
+                  <Panel key={nanoid()} header={`${idx}: ${methodName}`} style={{ padding: 0 }}>
+                    <div style={{ padding: '12px' }}>
+                      <JSONTree
+                        data={item}
+                        hideRoot={true}
+                        shouldExpandNodeInitially={(keyPath) => keyPath.length <= 1 && keyPath[0] !== 'hex'}
+                        theme="monokai"
+                        invertTheme={true}
+                      />
+                    </div>
+                  </Panel>
+                )
+              })}
+            </Collapse>
           </div>
         </Card>
       )}

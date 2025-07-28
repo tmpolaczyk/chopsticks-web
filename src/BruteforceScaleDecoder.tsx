@@ -53,8 +53,8 @@ const BruteforceScaleDecoder: React.FC<BruteforceScaleDecoderProps> = ({ api }) 
           // Try to use the typedef as type name, since you can do createType("struct A { s: AccountId }")
           // The problem with createType is that 0x (empty) decodes as valid type for all types, there is no equivalent to
           // DecodeAll trait. Maybe decode, encode again and check if hex is equal?
-          const decoded = api.registry.createType(typeName, hexInput);
-          const encodedAgain = decoded.toHex();
+          const decoded = api.registry.createType(typeName, hexInput)
+          const encodedAgain = decoded.toHex()
           if (encodedAgain === hexInput) {
             successes.set(id, { type: typeName, value: decoded.toHuman() })
           }
