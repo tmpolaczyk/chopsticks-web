@@ -14,17 +14,17 @@ const endpoints = [
 ]
 
 // Tanssi endpoints from
-// https://github.com/moondance-labs/tanssi-chain-visualization/blob/main/src/components/Dashboard.tsx
-const parachainUrls = [
-  'https://stagebox.tanssi-dev.network',
+// https://github.com/moondance-labs/tanssi-chain-visualization/blob/main/src/constants/url.ts
+export const parachainUrls = [
+  'https://services.tanssi-dev.network/stagebox',
   'https://fraa-flashbox-rpc.a.stagenet.tanssi.network',
   'https://dancebox.tanssi-api.network',
 ]
 
-const relaychainUrls = [
-  'https://stagelight.tanssi-dev.network',
+export const relaychainUrls = [
+  'https://services.tanssi-dev.network/stagelight',
   'https://dancelight.tanssi-api.network',
-  'https://moonlight.tanssi-dev.network',
+  'https://services.tanssi-dev.network/moonlight',
   'https://tanssi.tanssi-mainnet.network',
 ]
 
