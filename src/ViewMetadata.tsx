@@ -1,20 +1,38 @@
 import type { ApiPromise } from '@polkadot/api'
-import { Button, Card, Divider, InputNumber, Spin, Typography, message } from 'antd'
+import { Button, Card, Divider, InputNumber, Spin, Tag, Typography, message } from 'antd'
 import React, { useState, useEffect } from 'react'
 import { JSONTree, type KeyPath } from 'react-json-tree'
 
 export interface ViewMetadataProps {
   api: ApiPromise
+  endpoint: string
 }
 
-const ViewMetadata: React.FC<ViewMetadataProps> = ({ api }) => {
+const ViewMetadata: React.FC<ViewMetadataProps> = ({ api, endpoint }) => {
   const [loading, setLoading] = useState(true)
   const [data, setData] = useState<any>({})
+
+  // Lookup URL state
+  const [lookupUrl, setLookupUrl] = useState<string>('')
 
   // Type Explorer state
   const [typeId, setTypeId] = useState<number | null>(0)
   const [loadingType, setLoadingType] = useState(false)
   const [typeInfo, setTypeInfo] = useState<any>(null)
+
+  // Build lookup URL based on current API
+  useEffect(() => {
+    try {
+      // Runtime chain name as network identifier
+      //let networkId = api.runtimeChain.toString() || ''
+      // This works
+      const networkId = 'localhost'
+      const url = `https://dev.papi.how/metadata/lookup#networkId=${encodeURIComponent(networkId)}&endpoint=${encodeURIComponent(endpoint)}`
+      setLookupUrl(url)
+    } catch (err) {
+      console.warn('Could not build lookup URL:', err)
+    }
+  }, [endpoint])
 
   useEffect(() => {
     const fetchAll = async () => {
@@ -180,6 +198,28 @@ const ViewMetadata: React.FC<ViewMetadataProps> = ({ api }) => {
   return (
     <Card>
       <Typography.Title level={4}>Test Metadata</Typography.Title>
+
+      {/* Styled WIP notice */}
+      <div
+        style={{
+          background: '#fffbe6',
+          border: '1px solid #ffe58f',
+          borderRadius: 4,
+          padding: 12,
+          marginBottom: 24,
+        }}
+      >
+        <Tag color="orange">WIP</Tag> <Typography.Text strong>Use the metadata lookup tool instead:</Typography.Text>
+        <br />
+        {lookupUrl && (
+          <Typography.Text copyable>
+            <a href={lookupUrl} target="_blank" rel="noopener noreferrer">
+              {lookupUrl}
+            </a>
+          </Typography.Text>
+        )}
+      </div>
+
       {loading ? (
         <Spin />
       ) : (

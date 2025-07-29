@@ -170,7 +170,7 @@ function App() {
     {
       key: 'test-metadata',
       label: 'Test Metadata',
-      children: api ? <TestMetadata api={api} /> : <Spin spinning={true} />,
+      children: api && endpoint ? <TestMetadata api={api} endpoint={endpoint} /> : <Spin spinning={true} />,
     },
     {
       key: 'bruteforce-scale-decoder',
