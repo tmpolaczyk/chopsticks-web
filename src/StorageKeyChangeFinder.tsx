@@ -120,7 +120,7 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
     } finally {
       setFinding(false)
     }
-  }, [api, storageKey])
+  }, [api, storageKey, rangeStart, rangeEnd])
 
   const findNumber = useCallback(async () => {
     const validateKey = () => /^0x[0-9a-fA-F]+$/.test(storageKey)
@@ -191,7 +191,7 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
     } finally {
       setFinding(false)
     }
-  }, [api, storageKey, targetNumber])
+  }, [api, storageKey, targetNumber, rangeStart, rangeEnd])
 
   // find all changes using recursive binary-walk
   const findAllChanges = useCallback(async () => {
@@ -243,7 +243,7 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
     } finally {
       setFinding(false)
     }
-  }, [api, storageKey])
+  }, [api, storageKey, rangeStart, rangeEnd])
 
   // Linear scan (sequential)
   const findLinearScan = useCallback(async () => {
@@ -309,16 +309,11 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
           <Radio.Button value="linear">Linear Scan</Radio.Button>
         </Radio.Group>
 
-       {/* Compact block range */}
+        {/* Compact block range */}
         <Form layout="vertical">
           <Form.Item label="Block Range">
             <Space.Compact>
-              <InputNumber
-                min={0}
-                value={rangeStart}
-                onChange={(v) => setRangeStart(v ?? 0)}
-                style={{ width: '50%' }}
-              />
+              <InputNumber min={0} value={rangeStart} onChange={(v) => setRangeStart(v ?? 0)} style={{ width: '50%' }} />
               <InputNumber
                 min={0}
                 value={rangeEnd ?? undefined}
@@ -372,42 +367,30 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
             </Form.Item>
           )}
 
-          {mode === 'all' && changes.length > 0 && (
-            <>
-              {changes.map((c) => (
-                <Form.Item label={`Change at #${c.block}`} key={c.block}>
-                  <Input value={c.hex} readOnly />
-                  <Typography.Text>Block date:</Typography.Text>
-                  <BlockDate api={api} blockNumber={c.block} />
-                </Form.Item>
-              ))}
-            </>
-          )}
+          {mode === 'all' &&
+            changes.length > 0 &&
+            changes.map((c) => (
+              <Form.Item label={`Change at #${c.block}`} key={c.block}>
+                <Input value={c.hex} readOnly />
+                <Typography.Text>Block date:</Typography.Text>
+                <BlockDate api={api} blockNumber={c.block} />
+              </Form.Item>
+            ))}
 
-          {mode === 'linear' && changes.length > 0 && (
-            <>
-              {changes.map((c) => (
-                <Form.Item label={`Change at #${c.block}`} key={c.block}>
-                  <Input value={c.hex} readOnly />
-                  <Typography.Text>Block date:</Typography.Text>
-                  <BlockDate api={api} blockNumber={c.block} />
-                </Form.Item>
-              ))}
-            </>
-          )}
+          {mode === 'linear' &&
+            changes.length > 0 &&
+            changes.map((c) => (
+              <Form.Item label={`Change at #${c.block}`} key={c.block}>
+                <Input value={c.hex} readOnly />
+                <Typography.Text>Block date:</Typography.Text>
+                <BlockDate api={api} blockNumber={c.block} />
+              </Form.Item>
+            ))}
 
           <Form.Item>
             <Button
               type="primary"
-              onClick={
-                mode === 'change'
-                  ? findChange
-                  : mode === 'number'
-                  ? findNumber
-                  : mode === 'all'
-                  ? findAllChanges
-                  : findLinearScan
-              }
+              onClick={mode === 'change' ? findChange : mode === 'number' ? findNumber : mode === 'all' ? findAllChanges : findLinearScan}
               loading={finding}
               block
               disabled={!api || !storageKey || (mode === 'number' && !targetNumber)}
@@ -415,10 +398,10 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
               {mode === 'change'
                 ? 'Find Last Change'
                 : mode === 'number'
-                ? 'Find Closest Value'
-                : mode === 'all'
-                ? 'Find All Changes'
-                : 'Linear Scan'}
+                  ? 'Find Closest Value'
+                  : mode === 'all'
+                    ? 'Find All Changes'
+                    : 'Linear Scan'}
             </Button>
           </Form.Item>
         </Form>
