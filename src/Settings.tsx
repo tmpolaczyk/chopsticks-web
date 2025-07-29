@@ -1,6 +1,6 @@
 import { ApiPromise, WsProvider } from '@polkadot/api'
 import useLocalStorage from '@rehooks/local-storage'
-import { AutoComplete, Button, Form, List, Progress, Space, Typography, message } from 'antd'
+import { AutoComplete, Button, Form, Progress, Space, Table, Typography, message } from 'antd'
 import _ from 'lodash'
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
@@ -33,6 +33,12 @@ export const relaychainUrls = [
 // 3. splice into `endpoints` at position 0
 endpoints.splice(0, 0, ...[...relaychainUrls, ...parachainUrls].map((url) => url.replace(/^https?:\/\//, 'wss://')))
 
+interface LocalEndpoint {
+  url: string
+  runtimeName: string
+  runtimeVersion: string
+}
+
 export type SettingsProps = {
   onConnect: (api?: ApiPromise, endpoint?: string) => void
 }
@@ -44,7 +50,7 @@ const Settings: React.FC<SettingsProps> = ({ onConnect }) => {
   const [api, setApi] = useState<ApiPromise>()
   const [connectionStatus, setConnectionStatus] = useState<string>()
   const [scanning, setScanning] = useState(false)
-  const [foundEndpoints, setFoundEndpoints] = useState<string[]>([])
+  const [foundEndpoints, setFoundEndpoints] = useState<LocalEndpoint[]>([])
   const [scannedCount, setScannedCount] = useState(0)
 
   const totalPorts = 65535
@@ -53,31 +59,35 @@ const Settings: React.FC<SettingsProps> = ({ onConnect }) => {
     return Array.from(opts).map((e) => ({ value: e }))
   }, [endpoint, foundEndpoints])
 
-  const checkPort = useCallback((port: number): Promise<boolean> => {
+  const checkPort = useCallback((port: number): Promise<LocalEndpoint | null> => {
     return new Promise((resolve) => {
-      const ws = new WebSocket(`ws://127.0.0.1:${port}`)
+      const url = `ws://127.0.0.1:${port}`
+      const ws = new WebSocket(url)
       const timeout = window.setTimeout(() => {
         ws.close()
-        resolve(false)
+        resolve(null)
       }, 1000)
       ws.onopen = () => {
         clearTimeout(timeout)
-        ws.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'system_health', params: [] }))
+        ws.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'state_getRuntimeVersion', params: [] }))
       }
-      ws.onmessage = (event) => {
+      ws.onmessage = ({ data }) => {
         clearTimeout(timeout)
         ws.close()
         try {
-          const data = JSON.parse(event.data)
-          if (data.jsonrpc === '2.0') resolve(true)
-          else resolve(false)
+          const resp = JSON.parse(data)
+          if (resp.jsonrpc === '2.0' && resp.result?.specName) {
+            resolve({ url, runtimeName: resp.result.specName, runtimeVersion: resp.result.specVersion })
+          } else {
+            resolve(null)
+          }
         } catch {
-          resolve(false)
+          resolve(null)
         }
       }
       ws.onerror = () => {
         clearTimeout(timeout)
-        resolve(false)
+        resolve(null)
       }
     })
   }, [])
@@ -86,18 +96,22 @@ const Settings: React.FC<SettingsProps> = ({ onConnect }) => {
     setScanning(true)
     setFoundEndpoints([])
     setScannedCount(0)
-    const found: string[] = []
-    // TODO: this is slow and the list is not lazy, it waits until the scan is complete to show the list
+    const found: LocalEndpoint[] = []
+    // TODO: this is slow so we only scan ports 9900 to 10000
+    // Not worth it to make the range configurable
     //const ports = Array.from({ length: totalPorts }, (_, i) => i + 1);
     const ports = Array.from({ length: 100 }, (_, i) => i + 9900)
-    const concurrency = 100
+    const concurrency = 5
     for (let i = 0; i < ports.length; i += concurrency) {
       const slice = ports.slice(i, i + concurrency)
       const results = await Promise.all(slice.map(checkPort))
-      results.forEach((isRpc, idx) => {
-        if (isRpc) found.push(`ws://127.0.0.1:${slice[idx]}`)
-      })
+      for (const localEndpoint of results) {
+        if (localEndpoint) {
+          found.push(localEndpoint)
+        }
+      }
       setScannedCount((prev) => prev + slice.length)
+      setFoundEndpoints(found)
     }
     setFoundEndpoints(found)
     setScanning(false)
@@ -174,6 +188,42 @@ const Settings: React.FC<SettingsProps> = ({ onConnect }) => {
   }, [endpoint, searchParams, setSearchParams])
   const progress = Math.min(100, Math.round((scannedCount / totalPorts) * 100))
 
+  const columns = [
+    {
+      title: 'URL',
+      dataIndex: 'url',
+      key: 'url',
+      ellipsis: true,
+    },
+    {
+      title: 'Runtime',
+      dataIndex: 'runtimeName',
+      key: 'runtimeName',
+      ellipsis: true,
+    },
+    {
+      title: 'Version',
+      dataIndex: 'runtimeVersion',
+      key: 'runtimeVersion',
+      ellipsis: true,
+    },
+    {
+      title: 'Action',
+      key: 'action',
+      render: (_: any, ep: LocalEndpoint) => (
+        <Button
+          type="link"
+          onClick={() => {
+            form.setFieldsValue({ endpoint: ep.url })
+            return onFinish({ endpoint: ep.url })
+          }}
+        >
+          Connect
+        </Button>
+      ),
+    },
+  ]
+
   return (
     <>
       <Form form={form} layout="inline" onFinish={onFinish}>
@@ -197,28 +247,26 @@ const Settings: React.FC<SettingsProps> = ({ onConnect }) => {
       </Form>
 
       {/* Scan section on new line */}
-      <Space direction="vertical" style={{ width: '100%', marginTop: 16 }}>
-        <Button type="default" onClick={scanLocalPorts} loading={scanning} block>
+      <Space direction="vertical" style={{ maxWidth: '800px', width: '100%', marginTop: 16 }}>
+        <Button type="default" onClick={scanLocalPorts} loading={scanning} disabled={scanning} block>
           {scanning ? 'Scanning...' : 'Scan Local RPC'}
         </Button>
         {scanning && <Progress percent={progress} />}
         {foundEndpoints.length > 0 && (
-          <List
-            header={<Typography.Text>Found Endpoints</Typography.Text>}
-            bordered
+          <Table<LocalEndpoint>
+            columns={columns}
             dataSource={foundEndpoints}
-            renderItem={(ep) => (
-              <List.Item>
-                <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                  <Typography.Text ellipsis style={{ maxWidth: 400 }}>
-                    {ep}
-                  </Typography.Text>
-                  <Button type="link" onClick={() => onFinish({ endpoint: ep })}>
-                    Connect
-                  </Button>
-                </Space>
-              </List.Item>
-            )}
+            rowKey="url"
+            pagination={false}
+            // left‑aligned and max 800px wide
+            style={{ maxWidth: 800, marginTop: 16 }}
+            onRow={(record) => ({
+              onClick: () => {
+                form.setFieldsValue({ endpoint: record.url })
+                onFinish({ endpoint: record.url })
+              },
+              style: { cursor: 'pointer' },
+            })}
           />
         )}
       </Space>
