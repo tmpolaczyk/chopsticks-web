@@ -44,19 +44,26 @@ const BruteforceScaleDecoder: React.FC<BruteforceScaleDecoderProps> = ({ api }) 
           break
         }
         // only named types (skip anonymous internals)
+        // TODO: I would like to try anonymous types as well, but what do I need to pass to `createType` ?
         const typeName = lookup.getName(id)
         if (typeName === undefined) {
           continue
         }
         try {
-          // TODO: this doesnt work, and I want to also create types with no names.
-          // Try to use the typedef as type name, since you can do createType("struct A { s: AccountId }")
-          // The problem with createType is that 0x (empty) decodes as valid type for all types, there is no equivalent to
-          // DecodeAll trait. Maybe decode, encode again and check if hex is equal?
+          // Decode type from hex input
           const decoded = api.registry.createType(typeName, hexInput)
+
+          // The problem with createType is that 0x (empty) decodes as valid type for all types, there is no equivalent to
+          // DecodeAll trait. So we decode, encode again and check if hex is equal.
           const encodedAgain = decoded.toHex()
+          // Some types encoding is defined as Wrapper(Vec<u8>). These types can decode any hex input, and they
+          // encode to themselves (SpRuntimeOpaqueValue, SpCoreOpaqueMetadata, PolkadotParachainPrimitivesPrimitivesHeadData, etc).
+          // We skip those since all hex values can be decoded as that, and the decoded value does not give any info.
           if (encodedAgain === hexInput) {
-            successes.set(id, { type: typeName, value: decoded.toHuman() })
+            const humanDecoded = decoded.toHuman()
+            if (humanDecoded !== hexInput) {
+              successes.set(id, { type: typeName, value: humanDecoded })
+            }
           }
         } catch {
           // not decodable as this type
@@ -87,7 +94,7 @@ const BruteforceScaleDecoder: React.FC<BruteforceScaleDecoderProps> = ({ api }) 
         style={{ fontFamily: 'monospace', marginBottom: 12 }}
       />
 
-      <Button type="primary" onClick={decodeAll} disabled={loading || hexInput.length < 3}>
+      <Button type="primary" onClick={decodeAll} disabled={loading || hexInput.length < 2}>
         {loading ? <Spin size="small" /> : 'Decode All'}
       </Button>
 
