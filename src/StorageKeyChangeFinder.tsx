@@ -1,6 +1,6 @@
 import type { ApiPromise } from '@polkadot/api'
 import { hexToBn } from '@polkadot/util'
-import { Button, Card, Col, Form, Input, Radio, Row, Select, Space, Typography, message } from 'antd'
+import { Button, Card, Col, Form, Input, InputNumber, Radio, Row, Select, Space, Typography, message } from 'antd'
 import React, { useState, useCallback, useEffect } from 'react'
 import { BlockDate } from './BlockDate'
 
@@ -18,11 +18,13 @@ const SUGGESTED_KEYS: { label: string; deriveHex: (api: ApiPromise) => string }[
 ]
 
 const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) => {
-  const [mode, setMode] = useState<'change' | 'number' | 'all'>('change')
+  const [mode, setMode] = useState<'change' | 'number' | 'all' | 'linear'>('change')
   const [storageKey, setStorageKey] = useState('')
   const [targetNumber, setTargetNumber] = useState('')
   const [finding, setFinding] = useState(false)
   const [searchRange, setSearchRange] = useState<[number, number] | null>(null)
+  const [rangeStart, setRangeStart] = useState<number>(0)
+  const [rangeEnd, setRangeEnd] = useState<number | null>(null)
 
   const [lowValueHex, setLowValueHex] = useState<string | null>(null)
   const [highValueHex, setHighValueHex] = useState<string | null>(null)
@@ -45,6 +47,8 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
     setFoundBlock(null)
     setFoundValueHex(null)
     setChanges([])
+    setRangeStart(0)
+    setRangeEnd(null)
   }, [mode, storageKey, targetNumber])
 
   const findChange = useCallback(async () => {
@@ -54,8 +58,8 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
 
     try {
       const head = (await api.query.system.number()).toNumber()
-      let low = 0
-      let high = head
+      let low = rangeStart
+      let high = rangeEnd !== null ? rangeEnd : head
 
       interface ValObj {
         block: number
@@ -128,8 +132,8 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
     setFinding(true)
     try {
       const head = (await api.query.system.number()).toNumber()
-      let low = 0
-      let high = head
+      let low = rangeStart
+      let high = rangeEnd !== null ? rangeEnd : head
 
       const readVal = async (block: number) => {
         const hex = (await api.rpc.state.getStorage(storageKey, await api.rpc.chain.getBlockHash(block)))?.toHex() || '0x'
@@ -199,6 +203,8 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
 
     try {
       const head = (await api.query.system.number()).toNumber()
+      const start = rangeStart
+      const end = rangeEnd !== null ? rangeEnd : head
 
       const readVal = async (block: number) => {
         const hash = (await api.rpc.chain.getBlockHash(block)).toHex()
@@ -206,8 +212,8 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
         return { block, hex }
       }
 
-      const lowVal = await readVal(0)
-      const highVal = await readVal(head)
+      const lowVal = await readVal(start)
+      const highVal = await readVal(end)
       const results: { block: number; hex: string }[] = []
 
       const walk = async (
@@ -230,7 +236,7 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
         await walk(low, mid, lowData, midData)
       }
 
-      await walk(0, head, lowVal, highVal)
+      await walk(start, end, lowVal, highVal)
       setChanges(results.sort((a, b) => b.block - a.block))
     } catch (err: any) {
       message.error(err.message || err.toString())
@@ -238,6 +244,40 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
       setFinding(false)
     }
   }, [api, storageKey])
+
+  // Linear scan (sequential)
+  const findLinearScan = useCallback(async () => {
+    if (!/^0x[0-9a-fA-F]+$/.test(storageKey)) return message.error('Enter a valid hex storage key')
+    setFinding(true)
+    setChanges([])
+    try {
+      const head = (await api.query.system.number()).toNumber()
+      const start = rangeStart
+      const end = rangeEnd !== null ? rangeEnd : head
+
+      const readVal = async (block: number) => {
+        const hash = (await api.rpc.chain.getBlockHash(block)).toHex()
+        const hex = (await api.rpc.state.getStorage(storageKey, hash))?.toHex() || '0x'
+        return { block, hex }
+      }
+
+      let prev = await readVal(start)
+      const results: { block: number; hex: string }[] = []
+      for (let b = start + 1; b <= end; b++) {
+        const curr = await readVal(b)
+        if (curr.hex !== prev.hex) {
+          results.push(curr)
+          setChanges([...results].sort((a, b) => b.block - a.block))
+          prev = curr
+        }
+      }
+      setChanges(results)
+    } catch (err: any) {
+      message.error(err.message || err.toString())
+    } finally {
+      setFinding(false)
+    }
+  }, [api, storageKey, rangeStart, rangeEnd])
 
   return (
     <Card>
@@ -266,9 +306,29 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
           <Radio.Button value="change">Last Change</Radio.Button>
           <Radio.Button value="number">By Number</Radio.Button>
           <Radio.Button value="all">All Changes</Radio.Button>
+          <Radio.Button value="linear">Linear Scan</Radio.Button>
         </Radio.Group>
 
+       {/* Compact block range */}
         <Form layout="vertical">
+          <Form.Item label="Block Range">
+            <Space.Compact>
+              <InputNumber
+                min={0}
+                value={rangeStart}
+                onChange={(v) => setRangeStart(v ?? 0)}
+                style={{ width: '50%' }}
+              />
+              <InputNumber
+                min={0}
+                value={rangeEnd ?? undefined}
+                onChange={(v) => setRangeEnd(v !== undefined ? v : null)}
+                placeholder="latest"
+                style={{ width: '50%' }}
+              />
+            </Space.Compact>
+          </Form.Item>
+
           <Row gutter={16}>
             <Col span={24}>
               <Form.Item label="Storage Key (hex)">
@@ -324,15 +384,41 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
             </>
           )}
 
+          {mode === 'linear' && changes.length > 0 && (
+            <>
+              {changes.map((c) => (
+                <Form.Item label={`Change at #${c.block}`} key={c.block}>
+                  <Input value={c.hex} readOnly />
+                  <Typography.Text>Block date:</Typography.Text>
+                  <BlockDate api={api} blockNumber={c.block} />
+                </Form.Item>
+              ))}
+            </>
+          )}
+
           <Form.Item>
             <Button
               type="primary"
-              onClick={mode === 'change' ? findChange : mode === 'number' ? findNumber : findAllChanges}
+              onClick={
+                mode === 'change'
+                  ? findChange
+                  : mode === 'number'
+                  ? findNumber
+                  : mode === 'all'
+                  ? findAllChanges
+                  : findLinearScan
+              }
               loading={finding}
               block
               disabled={!api || !storageKey || (mode === 'number' && !targetNumber)}
             >
-              {mode === 'change' ? 'Find Last Change' : mode === 'number' ? 'Find Closest Value' : 'Find All Changes'}
+              {mode === 'change'
+                ? 'Find Last Change'
+                : mode === 'number'
+                ? 'Find Closest Value'
+                : mode === 'all'
+                ? 'Find All Changes'
+                : 'Linear Scan'}
             </Button>
           </Form.Item>
         </Form>

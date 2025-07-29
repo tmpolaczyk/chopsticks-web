@@ -85,6 +85,10 @@ const BruteforceScaleDecoder: React.FC<BruteforceScaleDecoderProps> = ({ api }) 
     <Card>
       <Typography.Title level={4}>Bruteforce SCALE Decoder</Typography.Title>
 
+      <Typography.Text>
+        Try to decode a hex value as all the types present in metadata. Enter encoded value here: 0x...
+      </Typography.Text>
+
       <Input.TextArea
         rows={3}
         placeholder="0x…"
