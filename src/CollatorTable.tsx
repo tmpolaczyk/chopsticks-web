@@ -12,7 +12,7 @@ interface CollatorRow {
   paraId: number
   isInvulnerable: boolean
   isStaking: boolean
-  stake: bigint
+  stake: bigint | undefined
 }
 
 export interface CollatorTableProps {

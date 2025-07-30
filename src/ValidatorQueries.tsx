@@ -40,13 +40,16 @@ const ValidatorQueries: React.FC<ValidatorQueriesProps> = ({ api }) => {
       const activeEraRaw = await api.query.externalValidators.activeEra()
       const activeEra = activeEraRaw.unwrap().index.toNumber()
 
-      const eraRewardPoints = await api.query.externalValidatorsRewards.rewardPointsForEra(activeEra)
+      const eraRewardPoints = (await api.query.externalValidatorsRewards.rewardPointsForEra(activeEra)).toJSON()
+
+      const babeAuthorities = (await api.query.babe.authorities()).toJSON()
+      const queuedKeys = (await api.query.session.queuedKeys()).toJSON()
 
       setData({
         blockNumber,
         activeEra,
         validators,
-        eraRewardPoints: eraRewardPoints.toJSON(),
+        eraRewardPoints,
         externalValidators,
         whitelistedValidators,
         skipExternalValidators,
@@ -55,6 +58,8 @@ const ValidatorQueries: React.FC<ValidatorQueriesProps> = ({ api }) => {
         currentIndex,
         maxExternalValidators,
         maxWhitelistedValidators,
+        babeAuthorities,
+        queuedKeys,
       })
     } catch (err: any) {
       message.error(`Error fetching validator data: ${err.message}`)
