@@ -1,4 +1,5 @@
 import type { ApiPromise } from '@polkadot/api'
+import { hexToString } from '@polkadot/util'
 import { Card, Spin, Table, Tag, Typography, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import React, { useState, useEffect, useCallback } from 'react'
@@ -6,6 +7,7 @@ import React, { useState, useEffect, useCallback } from 'react'
 interface CollatorRow {
   key: string
   address: string
+  alias: string
   authorityKey: string
   paraId: number
   isInvulnerable: boolean
@@ -74,6 +76,7 @@ const CollatorTable: React.FC<CollatorTableProps> = ({ api }) => {
             key: `${paraId}-${address}`,
             paraId,
             address,
+            alias: '', // computed below because it needs async
             authorityKey: addressToAuthKey[address] || '',
             isInvulnerable: invSet.has(address),
             isStaking: stakingSet.has(address),
@@ -92,8 +95,11 @@ const CollatorTable: React.FC<CollatorTableProps> = ({ api }) => {
             // fetch on-chain Identity
             try {
               const identity = await api.query.identity.identityOf(r.address)
-              const info = (identity.toJSON() as any)?.info
-              alias = info?.display || ''
+              const displayHex = identity.toJSON()?.info?.display?.raw
+              if (displayHex) {
+                const display = hexToString(displayHex)
+                alias = display || ''
+              }
             } catch {
               alias = ''
             }
@@ -111,22 +117,24 @@ const CollatorTable: React.FC<CollatorTableProps> = ({ api }) => {
   })
 
   useEffect(() => {
-    let unsub: () => void
-
-    api.query.session
+    // Kick off the subscription; currentIndex() returns a Promise<() => void>
+    const unsubPromise = api.query.session
       .currentIndex((idx) => {
         const next = idx.toNumber()
         if (next === sessionIndex) return
         setSessionIndex(next)
         fetchData(next)
       })
-      .then((u) => {
-        unsub = u
-      })
       .catch(console.error)
 
+    // Cleanup: when the effect tears down, wait for that promise and then call the unsubscribe
     return () => {
-      unsub || unsub()
+      unsubPromise
+        .then((unsub) => unsub())
+        .catch((err) => {
+          // If we never got a valid unsubscribe fn, or it errors, swallow it
+          console.error('Failed to unsubscribe session index listener', err)
+        })
     }
   }, [api, sessionIndex, fetchData])
 

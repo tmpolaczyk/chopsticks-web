@@ -1,4 +1,5 @@
 import type { ApiPromise } from '@polkadot/api'
+import { hexToString } from '@polkadot/util'
 import { Card, Spin, Table, Tag, Typography, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import React, { useState, useEffect } from 'react'
@@ -6,6 +7,7 @@ import React, { useState, useEffect } from 'react'
 interface ValidatorRow {
   key: string
   address: string
+  alias: string
   isExternal: boolean
   isWhitelisted: boolean
   rewardPoints: number
@@ -13,6 +15,17 @@ interface ValidatorRow {
 
 export interface ValidatorTableProps {
   api: ApiPromise
+}
+
+// Hardcoded mapping for well-known collators
+// TODO: change key type to validators
+const HARDCODED_ALIASES: Record<string, string> = {
+  '5EjzvFifcxVujMJcxMSHtyEjx5KqtYgERb8j2pHVdvjFi2rL': 'Collator-01',
+  '5EZNgegN2yBWBNoNW7t83wZLErxCsSXVWAEV6WDJzTcUyQhr': 'Collator-02',
+  '5HdoWyvRhxYAu2i9uxQYgrSSAsTx8BST18JzJoFZ8RX1sLv7': 'Collator-03',
+  '5EXHZEiY6a28dwN1j1W1Etvw3EjA1vwYuPqLADjxy2gMinJX': 'Collator-04',
+  '5GmpT57ZJ3M8LsRYY4R55UTM5Upj9LgcNBietpMmtQssjubm': 'Collator-05',
+  '5DJRiJNo1aAu2VGMeF58NCB4Tk8bbnGSsY7zDGDNthoo2rU4': 'Collator-06',
 }
 
 const ValidatorTable: React.FC<ValidatorTableProps> = ({ api }) => {
@@ -40,12 +53,37 @@ const ValidatorTable: React.FC<ValidatorTableProps> = ({ api }) => {
         const dataRows: ValidatorRow[] = validators.map((addr) => ({
           key: addr,
           address: addr,
+          alias: '',
           isExternal: externalValidators.includes(addr),
           isWhitelisted: whitelistedValidators.includes(addr),
           rewardPoints: individualPoints[addr] || 0,
         }))
 
-        setRows(dataRows)
+        // enrich rows with alias: from hardcoded or on-chain identity
+        const enriched: ValidatorRow[] = await Promise.all(
+          dataRows.map(async (r) => {
+            let alias = ''
+            // check hardcoded first
+            if (HARDCODED_ALIASES[r.address]) {
+              alias = HARDCODED_ALIASES[r.address]
+            } else {
+              // fetch on-chain Identity
+              try {
+                const identity = await api.query.identity.identityOf(r.address)
+                const displayHex = identity.toJSON()?.info?.display?.raw
+                if (displayHex) {
+                  const display = hexToString(displayHex)
+                  alias = display || ''
+                }
+              } catch {
+                alias = ''
+              }
+            }
+            return { ...r, alias }
+          }),
+        )
+
+        setRows(enriched)
       } catch (err: any) {
         message.error(`Failed to load validator table: ${err.message}`)
       } finally {
@@ -62,6 +100,13 @@ const ValidatorTable: React.FC<ValidatorTableProps> = ({ api }) => {
       dataIndex: 'address',
       key: 'address',
       render: (text) => <Typography.Text code>{text}</Typography.Text>,
+      ellipsis: true,
+    },
+    {
+      title: 'Alias',
+      dataIndex: 'alias',
+      key: 'alias',
+      render: (text) => text || '-',
       ellipsis: true,
     },
     {
