@@ -18,12 +18,12 @@ const endpoints = [
 export const parachainUrls = [
   'https://services.tanssi-dev.network/stagebox',
   'https://fraa-flashbox-rpc.a.stagenet.tanssi.network',
-  'https://dancebox.tanssi-api.network',
+  'https://services.tanssi-testnet.network/dancebox',
 ]
 
 export const relaychainUrls = [
   'https://services.tanssi-dev.network/stagelight',
-  'https://dancelight.tanssi-api.network',
+  'https://services.tanssi-testnet.network/dancelight',
   'https://services.tanssi-dev.network/moonlight',
   'https://tanssi.tanssi-mainnet.network',
 ]
@@ -234,7 +234,7 @@ const Settings: React.FC<SettingsProps> = ({ onConnect }) => {
           initialValue={endpoint ?? endpoints[0]}
           rules={[{ pattern: /^wss?:\/\//, message: 'Not a valid WebSocket endpoint' }]}
         >
-          <AutoComplete style={{ minWidth: 300 }} options={endpointOptions} />
+          <AutoComplete style={{ minWidth: 500 }} options={endpointOptions} />
         </Form.Item>
         <Form.Item>
           <Button type="primary" htmlType="submit">

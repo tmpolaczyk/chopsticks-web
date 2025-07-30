@@ -53,7 +53,7 @@ const CollatorTable: React.FC<CollatorTableProps> = ({ api, onRefreshReady }) =>
       // Fetch raw data
       const collatorData: any = (await api.query.tanssiCollatorAssignment.collatorContainerChain()).toJSON()
       const authorityData: any = (await api.query.tanssiAuthorityAssignment.collatorContainerChain(idx)).toJSON()
-      const authMapping: Record<string, string> = (await api.query.tanssiAuthorityMapping.authorityIdMapping(idx)).toJSON() as Record<
+      const authorityMapping: Record<string, string> = (await api.query.tanssiAuthorityMapping.authorityIdMapping(idx)).toJSON() as Record<
         string,
         string
       >
