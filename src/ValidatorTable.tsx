@@ -15,10 +15,13 @@ interface ValidatorRow {
 
 export interface ValidatorTableProps {
   api: ApiPromise
+  /**
+   * Called once with the internal reload function so the parent
+   * can trigger table refresh whenever desired.
+   */
+  onRefreshReady?: (refresh: () => void) => void
 }
 
-// Hardcoded mapping for well-known collators
-// TODO: change key type to validators
 const HARDCODED_ALIASES: Record<string, string> = {
   '5EjzvFifcxVujMJcxMSHtyEjx5KqtYgERb8j2pHVdvjFi2rL': 'Collator-01',
   '5EZNgegN2yBWBNoNW7t83wZLErxCsSXVWAEV6WDJzTcUyQhr': 'Collator-02',
@@ -28,71 +31,77 @@ const HARDCODED_ALIASES: Record<string, string> = {
   '5DJRiJNo1aAu2VGMeF58NCB4Tk8bbnGSsY7zDGDNthoo2rU4': 'Collator-06',
 }
 
-const ValidatorTable: React.FC<ValidatorTableProps> = ({ api }) => {
+const ValidatorTable: React.FC<ValidatorTableProps> = ({ api, onRefreshReady }) => {
   const [loading, setLoading] = useState(true)
   const [rows, setRows] = useState<ValidatorRow[]>([])
 
   useEffect(() => {
-    const fetchData = async () => {
+    let isActive = true
+
+    async function load() {
+      setLoading(true)
       try {
-        // Fetch current active era
+        // 1) Active era
         const activeEraOpt = await api.query.externalValidators.activeEra()
         const activeEra = activeEraOpt.unwrap().index.toNumber()
 
-        // Fetch validator sets
-        const validators: string[] = (await api.query.session.validators()).map((v: any) => v.toString())
-        const externalValidators: string[] = (await api.query.externalValidators.externalValidators()).map((v: any) => v.toString())
-        const whitelistedValidators: string[] = (await api.query.externalValidators.whitelistedValidators()).map((v: any) => v.toString())
+        // 2) Validator sets
+        const validators = (await api.query.session.validators()).map((v: any) => v.toString())
+        const external = (await api.query.externalValidators.externalValidators()).map((v: any) => v.toString())
+        const whitelisted = (await api.query.externalValidators.whitelistedValidators()).map((v: any) => v.toString())
 
-        // Fetch reward points for this era
-        const eraRewardData = await api.query.externalValidatorsRewards.rewardPointsForEra(activeEra)
-        const rewardJson: any = eraRewardData.toJSON()
-        const individualPoints: Record<string, number> = rewardJson.individual || {}
+        // 3) Reward points
+        const eraRewards = await api.query.externalValidatorsRewards.rewardPointsForEra(activeEra)
+        const { individual = {} } = eraRewards.toJSON() as any
 
-        // Combine into table rows
-        const dataRows: ValidatorRow[] = validators.map((addr) => ({
+        // 4) Combine base rows
+        const base: ValidatorRow[] = validators.map((addr) => ({
           key: addr,
           address: addr,
           alias: '',
-          isExternal: externalValidators.includes(addr),
-          isWhitelisted: whitelistedValidators.includes(addr),
-          rewardPoints: individualPoints[addr] || 0,
+          isExternal: external.includes(addr),
+          isWhitelisted: whitelisted.includes(addr),
+          rewardPoints: individual[addr] || 0,
         }))
 
-        // enrich rows with alias: from hardcoded or on-chain identity
-        const enriched: ValidatorRow[] = await Promise.all(
-          dataRows.map(async (r) => {
-            let alias = ''
-            // check hardcoded first
-            if (HARDCODED_ALIASES[r.address]) {
-              alias = HARDCODED_ALIASES[r.address]
-            } else {
-              // fetch on-chain Identity
+        // 5) Enrich with alias
+        const enriched = await Promise.all(
+          base.map(async (r) => {
+            let alias = HARDCODED_ALIASES[r.address] || ''
+            if (!alias) {
               try {
                 const identity = await api.query.identity.identityOf(r.address)
-                const displayHex = identity.toJSON()?.info?.display?.raw
-                if (displayHex) {
-                  const display = hexToString(displayHex)
-                  alias = display || ''
+                const hex = identity.toJSON()?.info?.display?.raw
+                if (hex) {
+                  alias = hexToString(hex) || ''
                 }
               } catch {
-                alias = ''
+                // ignore lookup failures
               }
             }
             return { ...r, alias }
           }),
         )
 
-        setRows(enriched)
+        if (isActive) {
+          setRows(enriched)
+        }
       } catch (err: any) {
         message.error(`Failed to load validator table: ${err.message}`)
       } finally {
-        setLoading(false)
+        if (isActive) setLoading(false)
       }
     }
 
-    fetchData()
-  }, [api])
+    // expose reload function to parent
+    onRefreshReady?.(load)
+    // initial load
+    load()
+
+    return () => {
+      isActive = false
+    }
+  }, [api, onRefreshReady])
 
   const columns: ColumnsType<ValidatorRow> = [
     {

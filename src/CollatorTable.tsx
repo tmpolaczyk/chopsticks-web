@@ -16,6 +16,11 @@ interface CollatorRow {
 
 export interface CollatorTableProps {
   api: ApiPromise
+  /**
+   * Called once with the internal reload function so the parent
+   * can trigger table refresh whenever desired.
+   */
+  onRefreshReady?: (refresh: () => void) => void
 }
 
 // Hardcoded mapping for well-known collators
