@@ -24,6 +24,21 @@ export interface CollatorTableProps {
   onRefreshReady?: (refresh: () => void) => void
 }
 
+// compare two bigint | undefined values
+const compareBigInt = (x?: bigint, y?: bigint): number => {
+  // both missing → equal
+  if (x === undefined && y === undefined) return 0
+
+  // push undefined to the bottom:
+  if (x === undefined) return 1
+  if (y === undefined) return -1
+
+  // now both are bigint, do a normal compare:
+  if (x < y) return -1
+  if (x > y) return 1
+  return 0
+}
+
 const HARDCODED_ALIASES: Record<string, string> = {
   '5EjzvFifcxVujMJcxMSHtyEjx5KqtYgERb8j2pHVdvjFi2rL': 'Collator-01',
   '5EZNgegN2yBWBNoNW7t83wZLErxCsSXVWAEV6WDJzTcUyQhr': 'Collator-02',
@@ -144,14 +159,23 @@ const CollatorTable: React.FC<CollatorTableProps> = ({ api, onRefreshReady }) =>
       title: 'Collator Address',
       dataIndex: 'address',
       key: 'address',
+      sorter: (a, b) => a.address.localeCompare(b.address),
       render: (t) => <Typography.Text code>{t}</Typography.Text>,
       ellipsis: true,
     },
-    { title: 'Alias', dataIndex: 'alias', key: 'alias', render: (t) => t || '-', ellipsis: true },
+    {
+      title: 'Alias',
+      dataIndex: 'alias',
+      key: 'alias',
+      sorter: (a, b) => a.alias.localeCompare(b.alias),
+      render: (t) => t || '-',
+      ellipsis: true,
+    },
     {
       title: 'Authority Key',
       dataIndex: 'authorityKey',
       key: 'authorityKey',
+      sorter: (a, b) => a.authorityKey.localeCompare(b.authorityKey),
       render: (t) => <Typography.Text code>{t}</Typography.Text>,
       ellipsis: true,
     },
@@ -159,6 +183,7 @@ const CollatorTable: React.FC<CollatorTableProps> = ({ api, onRefreshReady }) =>
       title: 'Invulnerable',
       dataIndex: 'isInvulnerable',
       key: 'isInvulnerable',
+      sorter: (a, b) => Number(a.isInvulnerable) - Number(b.isInvulnerable),
       render: (v) => (v ? <Tag color="purple">Yes</Tag> : <Tag>No</Tag>),
       filters: [
         { text: 'Invulnerable', value: true },
@@ -170,6 +195,7 @@ const CollatorTable: React.FC<CollatorTableProps> = ({ api, onRefreshReady }) =>
       title: 'Staking',
       dataIndex: 'isStaking',
       key: 'isStaking',
+      sorter: (a, b) => Number(a.isStaking) - Number(b.isStaking),
       render: (v) => (v ? <Tag color="green">Yes</Tag> : <Tag>No</Tag>),
       filters: [
         { text: 'Staking', value: true },
@@ -177,7 +203,7 @@ const CollatorTable: React.FC<CollatorTableProps> = ({ api, onRefreshReady }) =>
       ],
       onFilter: (val, rec) => rec.isStaking === val,
     },
-    { title: 'Stake', dataIndex: 'stake', key: 'stake', render: (v) => v?.toString() },
+    { title: 'Stake', dataIndex: 'stake', key: 'stake', sorter: (a, b) => compareBigInt(a.stake, b.stake), render: (v) => v?.toString() },
   ]
 
   return (

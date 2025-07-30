@@ -108,6 +108,7 @@ const ValidatorTable: React.FC<ValidatorTableProps> = ({ api, onRefreshReady }) 
       title: 'Validator Address',
       dataIndex: 'address',
       key: 'address',
+      sorter: (a, b) => a.address.localeCompare(b.address),
       render: (text) => <Typography.Text code>{text}</Typography.Text>,
       ellipsis: true,
     },
@@ -115,6 +116,7 @@ const ValidatorTable: React.FC<ValidatorTableProps> = ({ api, onRefreshReady }) 
       title: 'Alias',
       dataIndex: 'alias',
       key: 'alias',
+      sorter: (a, b) => a.alias.localeCompare(b.alias),
       render: (text) => text || '-',
       ellipsis: true,
     },
@@ -122,6 +124,7 @@ const ValidatorTable: React.FC<ValidatorTableProps> = ({ api, onRefreshReady }) 
       title: 'External',
       dataIndex: 'isExternal',
       key: 'isExternal',
+      sorter: (a, b) => Number(a.isExternal) - Number(b.isExternal),
       render: (val) => (val ? <Tag color="green">Yes</Tag> : <Tag color="default">No</Tag>),
       filters: [
         { text: 'External', value: true },
@@ -133,6 +136,7 @@ const ValidatorTable: React.FC<ValidatorTableProps> = ({ api, onRefreshReady }) 
       title: 'Whitelisted',
       dataIndex: 'isWhitelisted',
       key: 'isWhitelisted',
+      sorter: (a, b) => Number(a.isWhitelisted) - Number(b.isWhitelisted),
       render: (val) => (val ? <Tag color="blue">Yes</Tag> : <Tag color="default">No</Tag>),
       filters: [
         { text: 'Whitelisted', value: true },
