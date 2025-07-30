@@ -1,5 +1,5 @@
 import type { ApiPromise } from '@polkadot/api'
-import { hexToString } from '@polkadot/util'
+import { hexToBigInt, hexToString } from '@polkadot/util'
 import { Card, Spin, Table, Tag, Typography, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import React, { useState, useEffect, useCallback } from 'react'
@@ -12,6 +12,7 @@ interface CollatorRow {
   paraId: number
   isInvulnerable: boolean
   isStaking: boolean
+  stake: bigint
 }
 
 export interface CollatorTableProps {
@@ -71,7 +72,7 @@ const CollatorTable: React.FC<CollatorTableProps> = ({ api, onRefreshReady }) =>
       // Extract containerChains
       const activeChains: Record<string, string[]> = collatorData.containerChains || {}
       const invSet = new Set(invulnerables)
-      const stakeSet = new Set(stakingCandidates)
+      const stakeMap = new Map(stakingCandidates.map((x) => [x.candidate, hexToBigInt(x.stake)]))
 
       // Build rows
       const dataRows: CollatorRow[] = []
@@ -86,7 +87,8 @@ const CollatorTable: React.FC<CollatorTableProps> = ({ api, onRefreshReady }) =>
             alias: '',
             authorityKey: addressToAuthKey[address] || '',
             isInvulnerable: invSet.has(address),
-            isStaking: stakeSet.has(address),
+            isStaking: stakeMap.has(address),
+            stake: stakeMap.get(address),
           })
         }
       }
@@ -175,6 +177,7 @@ const CollatorTable: React.FC<CollatorTableProps> = ({ api, onRefreshReady }) =>
       ],
       onFilter: (val, rec) => rec.isStaking === val,
     },
+    { title: 'Stake', dataIndex: 'stake', key: 'stake', render: (v) => v?.toString() },
   ]
 
   return (
