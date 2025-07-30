@@ -56,7 +56,7 @@ const CollatorQueries: React.FC<CollatorQueriesProps> = ({ api }) => {
     let intervalId: NodeJS.Timeout
 
     // initial JSON load
-    fetchAll()
+    if (autoUpdate) fetchAll()
 
     // poll if autoUpdate enabled
     if (autoUpdate) {
