@@ -2,6 +2,7 @@ import { ApiPromise, WsProvider } from '@polkadot/api'
 import useLocalStorage from '@rehooks/local-storage'
 import { AutoComplete, Button, Form, Progress, Space, Table, Typography, message } from 'antd'
 import _ from 'lodash'
+import { nanoid } from 'nanoid'
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
@@ -33,6 +34,21 @@ export const relaychainUrls = [
 // 3. splice into `endpoints` at position 0
 endpoints.splice(0, 0, ...[...relaychainUrls, ...parachainUrls].map((url) => url.replace(/^https?:\/\//, 'wss://')))
 
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+const highlightMatch = (text: string, query: string) => {
+  if (!query) return text
+  const re = new RegExp(`(${escapeRegExp(query)})`, 'ig')
+  const parts = text.split(re)
+  return (
+    <>
+      {parts.map((part) =>
+        part.toLowerCase() === query.toLowerCase() ? <mark key={nanoid()}>{part}</mark> : <span key={nanoid()}>{part}</span>,
+      )}
+    </>
+  )
+}
+
 interface LocalEndpoint {
   url: string
   runtimeName: string
@@ -52,12 +68,60 @@ const Settings: React.FC<SettingsProps> = ({ onConnect }) => {
   const [scanning, setScanning] = useState(false)
   const [foundEndpoints, setFoundEndpoints] = useState<LocalEndpoint[]>([])
   const [scannedCount, setScannedCount] = useState(0)
+  const [searchText, setSearchText] = useState('')
 
   const totalPorts = 65535
-  const endpointOptions = useMemo(() => {
-    const opts = new Set<string>([...endpoints, ...(endpoint ? [endpoint] : []), ...foundEndpoints])
-    return Array.from(opts).map((e) => ({ value: e }))
+  // build a deduped list of all URL strings
+  const allUrls = useMemo(() => {
+    const set = new Set<string>()
+    for (const u of endpoints) {
+      set.add(u)
+    }
+    if (endpoint) {
+      set.add(endpoint as string)
+    }
+    for (const e of foundEndpoints) {
+      set.add(e.url)
+    }
+    return Array.from(set)
   }, [endpoint, foundEndpoints])
+
+  const lowerQuery = searchText.trim().toLowerCase()
+  const matchingUrls = useMemo(
+    () => (lowerQuery ? allUrls.filter((u) => u.toLowerCase().includes(lowerQuery)) : allUrls),
+    [allUrls, lowerQuery],
+  )
+
+  // options with highlighted labels; plus an info row when filtering or when falling back
+  type Opt = { value: string; label?: React.ReactNode; disabled?: boolean }
+  const autoCompleteOptions: Opt[] = useMemo(() => {
+    const isFiltering = lowerQuery.length > 0 && matchingUrls.length > 0
+    const urlsToShow = isFiltering ? matchingUrls : allUrls
+
+    const opts: Opt[] = urlsToShow.map((u) => ({
+      value: u,
+      label: isFiltering ? <span>{highlightMatch(u, lowerQuery)}</span> : u,
+    }))
+
+    if (lowerQuery && matchingUrls.length === 0) {
+      opts.unshift({
+        value: '__info_all__',
+        label: <em>No matches — showing all endpoints</em>,
+        disabled: true,
+      })
+    } else if (isFiltering) {
+      opts.unshift({
+        value: '__info_filter__',
+        label: (
+          <em>
+            Filtering by “{searchText}” — {matchingUrls.length} match{matchingUrls.length === 1 ? '' : 'es'}
+          </em>
+        ),
+        disabled: true,
+      })
+    }
+    return opts
+  }, [lowerQuery, searchText, matchingUrls, allUrls])
 
   const checkPort = useCallback((port: number): Promise<LocalEndpoint | null> => {
     return new Promise((resolve) => {
@@ -111,9 +175,10 @@ const Settings: React.FC<SettingsProps> = ({ onConnect }) => {
         }
       }
       setScannedCount((prev) => prev + slice.length)
-      setFoundEndpoints(found)
+      // Need to create a new array here because react doesnt know the array changed
+      setFoundEndpoints(found.map((x) => x))
     }
-    setFoundEndpoints(found)
+    setFoundEndpoints(found.map((x) => x))
     setScanning(false)
     if (found.length > 0) {
       message.success(`Found ${found.length} JSON-RPC endpoints`)
@@ -234,7 +299,14 @@ const Settings: React.FC<SettingsProps> = ({ onConnect }) => {
           initialValue={endpoint ?? endpoints[0]}
           rules={[{ pattern: /^wss?:\/\//, message: 'Not a valid WebSocket endpoint' }]}
         >
-          <AutoComplete style={{ minWidth: 500 }} options={endpointOptions} />
+          <AutoComplete
+            style={{ minWidth: 500 }}
+            options={autoCompleteOptions}
+            filterOption={false} // we handle filtering ourselves
+            onSearch={setSearchText} // update search text for filtering + highlighting
+            onSelect={() => setSearchText('')} // reset search text after selecting an item
+            allowClear
+          />
         </Form.Item>
         <Form.Item>
           <Button type="primary" htmlType="submit">
