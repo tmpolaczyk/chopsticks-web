@@ -97,10 +97,10 @@ const Settings: React.FC<SettingsProps> = ({ onConnect }) => {
     setFoundEndpoints([])
     setScannedCount(0)
     const found: LocalEndpoint[] = []
-    // TODO: this is slow so we only scan ports 9900 to 10000
+    // TODO: this is slow so we only scan ports 9900 to 10200
     // Not worth it to make the range configurable
     //const ports = Array.from({ length: totalPorts }, (_, i) => i + 1);
-    const ports = Array.from({ length: 100 }, (_, i) => i + 9900)
+    const ports = Array.from({ length: 300 }, (_, i) => i + 9900)
     const concurrency = 5
     for (let i = 0; i < ports.length; i += concurrency) {
       const slice = ports.slice(i, i + concurrency)
