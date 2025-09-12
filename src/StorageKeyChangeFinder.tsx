@@ -9,6 +9,54 @@ export type StorageKeyChangeFinderProps = {
   api: ApiPromise
 }
 
+// ========= Helper types & functions =========
+
+type Mode = 'change' | 'number' | 'all' | 'linear'
+
+interface ValObjWithHash {
+  block: number
+  hash: string
+  hex: string
+}
+
+interface ValObj {
+  block: number
+  hex: string
+}
+
+const validateHexKey = (key: string): boolean => /^0x[0-9a-fA-F]+$/.test(key)
+
+const getHeadNumber = async (api: ApiPromise): Promise<number> => {
+  return (await api.query.system.number()).toNumber()
+}
+
+const getBlockHashHex = async (api: ApiPromise, block: number): Promise<string> => {
+  return (await api.rpc.chain.getBlockHash(block)).toHex()
+}
+
+const readStorageHexAt = async (api: ApiPromise, storageKey: string, block: number): Promise<string> => {
+  const hash = await api.rpc.chain.getBlockHash(block)
+  const hex = (await api.rpc.state.getStorage(storageKey, hash))?.toHex() || '0x'
+  return hex
+}
+
+const readValWithHash = async (api: ApiPromise, storageKey: string, block: number): Promise<ValObjWithHash> => {
+  const hash = await getBlockHashHex(api, block)
+  const hex = (await api.rpc.state.getStorage(storageKey, hash))?.toHex() || '0x'
+  return { block, hash, hex }
+}
+
+const readVal = async (api: ApiPromise, storageKey: string, block: number): Promise<ValObj> => {
+  return { block, hex: await readStorageHexAt(api, storageKey, block) }
+}
+
+const readHexAndBnLe = async (api: ApiPromise, storageKey: string, block: number): Promise<{ hex: string; bn: bigint }> => {
+  const hex = await readStorageHexAt(api, storageKey, block)
+  // Keep exact conversion: little-endian, non-negative, then to BigInt via string
+  const bn = BigInt(hexToBn(hex, { isLe: true, isNegative: false }).toString())
+  return { hex, bn }
+}
+
 // Suggested keys configuration
 const SUGGESTED_KEYS: { label: string; deriveHex: (api: ApiPromise) => string }[] = [
   { label: 'session.currentIndex', deriveHex: (api) => api.query.session.currentIndex.key() },
@@ -17,8 +65,10 @@ const SUGGESTED_KEYS: { label: string; deriveHex: (api: ApiPromise) => string }[
   // add more as needed
 ]
 
+// ===================== Component =====================
+
 const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) => {
-  const [mode, setMode] = useState<'change' | 'number' | 'all' | 'linear'>('change')
+  const [mode, setMode] = useState<Mode>('change')
   const [storageKey, setStorageKey] = useState('')
   const [targetNumber, setTargetNumber] = useState('')
   const [finding, setFinding] = useState(false)
@@ -52,30 +102,18 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
   }, [mode, storageKey, targetNumber])
 
   const findChange = useCallback(async () => {
-    const validateKey = () => /^0x[0-9a-fA-F]+$/.test(storageKey)
-    if (!validateKey()) return message.error('Enter a valid hex storage key')
+    if (!validateHexKey(storageKey)) {
+      return message.error('Enter a valid hex storage key')
+    }
     setFinding(true)
 
     try {
-      const head = (await api.query.system.number()).toNumber()
+      const head = await getHeadNumber(api)
       let low = rangeStart
       let high = rangeEnd !== null ? rangeEnd : head
 
-      interface ValObj {
-        block: number
-        hash: string
-        hex: string
-      }
-
-      const readVal = async (block: number): Promise<ValObj> => {
-        const hash = (await api.rpc.chain.getBlockHash(block)).toHex()
-        const hex = (await api.rpc.state.getStorage(storageKey, hash))?.toHex() || '0x'
-        return { block, hash, hex }
-      }
-
-      // Fetch genesis (low) and head (high) once
-      let lowVal = await readVal(0)
-      let highVal = await readVal(high)
+      let lowVal = await readValWithHash(api, storageKey, 0)
+      let highVal = await readValWithHash(api, storageKey, high)
 
       // If nothing has ever changed since genesis:
       if (lowVal.hex === highVal.hex) {
@@ -93,7 +131,7 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
       // binary search:
       while (high - low > 1) {
         const mid = (low + high) >> 1
-        const midVal = await readVal(mid)
+        const midVal = await readValWithHash(api, storageKey, mid)
 
         if (midVal.hex === highVal.hex) {
           // the change must be at or before mid
@@ -123,25 +161,22 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
   }, [api, storageKey, rangeStart, rangeEnd])
 
   const findNumber = useCallback(async () => {
-    const validateKey = () => /^0x[0-9a-fA-F]+$/.test(storageKey)
-    if (!validateKey()) return message.error('Enter a valid hex storage key')
+    if (!validateHexKey(storageKey)) {
+      return message.error('Enter a valid hex storage key')
+    }
     const num = Number(targetNumber)
-    if (Number.isNaN(num)) return message.error('Enter a valid integer target')
+    if (Number.isNaN(num)) {
+      return message.error('Enter a valid integer target')
+    }
     const targetBn = BigInt(num)
 
     setFinding(true)
     try {
-      const head = (await api.query.system.number()).toNumber()
+      const head = await getHeadNumber(api)
       let low = rangeStart
       let high = rangeEnd !== null ? rangeEnd : head
 
-      const readVal = async (block: number) => {
-        const hex = (await api.rpc.state.getStorage(storageKey, await api.rpc.chain.getBlockHash(block)))?.toHex() || '0x'
-        const bn = BigInt(hexToBn(hex, { isLe: true, isNegative: false }).toString())
-        return { hex, bn }
-      }
-
-      const headVal = await readVal(high)
+      const headVal = await readHexAndBnLe(api, storageKey, high)
       if (targetBn >= headVal.bn) {
         setPrevBlock(null)
         setPrevValueHex(null)
@@ -150,7 +185,7 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
         return
       }
 
-      const genVal = await readVal(0)
+      const genVal = await readHexAndBnLe(api, storageKey, 0)
       if (targetBn <= genVal.bn) {
         setPrevBlock(null)
         setPrevValueHex(null)
@@ -161,7 +196,7 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
 
       while (high - low > 1) {
         const mid = (low + high) >> 1
-        const midVal = await readVal(mid)
+        const midVal = await readHexAndBnLe(api, storageKey, mid)
         if (midVal.bn < targetBn) {
           low = mid
         } else {
@@ -169,14 +204,14 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
         }
         setSearchRange([low, high])
 
-        const lowData = await readVal(low)
-        const highData = await readVal(high)
+        const lowData = await readHexAndBnLe(api, storageKey, low)
+        const highData = await readHexAndBnLe(api, storageKey, high)
         setLowValueHex(lowData.hex)
         setHighValueHex(highData.hex)
       }
 
-      const lowData = await readVal(low)
-      const highData2 = await readVal(high)
+      const lowData = await readHexAndBnLe(api, storageKey, low)
+      const highData2 = await readHexAndBnLe(api, storageKey, high)
       const diffL = targetBn - lowData.bn
       const diffH = highData2.bn - targetBn
       const chosen = diffL <= diffH ? low : high
@@ -185,6 +220,8 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
       setPrevBlock(prev)
       setPrevValueHex(prev != null ? lowData.hex : null)
       setFoundBlock(chosen)
+      // NOTE: This mirrors the original logic exactly, even though it looks suspicious.
+      // TODO: Consider whether this should be `chosen === low ? lowData.hex : highData2.hex`
       setFoundValueHex((chosen === low ? highData2 : highData2).hex)
     } catch (err: any) {
       message.error(err.message || err.toString())
@@ -195,33 +232,23 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
 
   // find all changes using recursive binary-walk
   const findAllChanges = useCallback(async () => {
-    const validateKey = () => /^0x[0-9a-fA-F]+$/.test(storageKey)
-    if (!validateKey()) return message.error('Enter a valid hex storage key')
+    if (!validateHexKey(storageKey)) {
+      return message.error('Enter a valid hex storage key')
+    }
 
     setFinding(true)
     setChanges([])
 
     try {
-      const head = (await api.query.system.number()).toNumber()
+      const head = await getHeadNumber(api)
       const start = rangeStart
       const end = rangeEnd !== null ? rangeEnd : head
 
-      const readVal = async (block: number) => {
-        const hash = (await api.rpc.chain.getBlockHash(block)).toHex()
-        const hex = (await api.rpc.state.getStorage(storageKey, hash))?.toHex() || '0x'
-        return { block, hex }
-      }
-
-      const lowVal = await readVal(start)
-      const highVal = await readVal(end)
+      const lowVal = await readVal(api, storageKey, start)
+      const highVal = await readVal(api, storageKey, end)
       const results: { block: number; hex: string }[] = []
 
-      const walk = async (
-        low: number,
-        high: number,
-        lowData: { block: number; hex: string },
-        highData: { block: number; hex: string },
-      ): Promise<void> => {
+      const walk = async (low: number, high: number, lowData: ValObj, highData: ValObj): Promise<void> => {
         if (lowData.hex === highData.hex) {
           return
         }
@@ -231,7 +258,7 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
           return
         }
         const mid = Math.floor((low + high) / 2)
-        const midData = await readVal(mid)
+        const midData = await readVal(api, storageKey, mid)
         await walk(mid, high, midData, highData)
         await walk(low, mid, lowData, midData)
       }
@@ -247,24 +274,20 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
 
   // Linear scan (sequential)
   const findLinearScan = useCallback(async () => {
-    if (!/^0x[0-9a-fA-F]+$/.test(storageKey)) return message.error('Enter a valid hex storage key')
+    if (!validateHexKey(storageKey)) {
+      return message.error('Enter a valid hex storage key')
+    }
     setFinding(true)
     setChanges([])
     try {
-      const head = (await api.query.system.number()).toNumber()
+      const head = await getHeadNumber(api)
       const start = rangeStart
       const end = rangeEnd !== null ? rangeEnd : head
 
-      const readVal = async (block: number) => {
-        const hash = (await api.rpc.chain.getBlockHash(block)).toHex()
-        const hex = (await api.rpc.state.getStorage(storageKey, hash))?.toHex() || '0x'
-        return { block, hex }
-      }
-
-      let prev = await readVal(start)
+      let prev = await readVal(api, storageKey, start)
       const results: { block: number; hex: string }[] = []
       for (let b = start + 1; b <= end; b++) {
-        const curr = await readVal(b)
+        const curr = await readVal(api, storageKey, b)
         if (curr.hex !== prev.hex) {
           results.push(curr)
           setChanges([...results].sort((a, b) => b.block - a.block))
