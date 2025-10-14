@@ -8,8 +8,7 @@ import Collectives from './Collectives'
 import ConsoleTerminal from './ConsoleTerminal'
 import DecodeKey from './DecodeKey'
 import Democracy from './Democracy'
-import DryRun from './DryRun'
-import DryRunBlock from './DryRunBlock'
+import DryRunExtrinsic from './DryRunExtrinsic'
 import FindBlockByDate from './FindBlockByDate'
 import Preimages from './Preimages'
 import Referenda from './Referenda'
@@ -112,6 +111,8 @@ function App() {
         <Spin spinning={true} />
       ),
     },
+    // These don't work :(
+    /*
     {
       key: 'dryrun-preimage',
       label: 'Dry Run Preimage',
@@ -127,10 +128,16 @@ function App() {
       label: 'Dry Run Block',
       children: api && endpoint ? <DryRunBlock api={api} endpoint={endpoint} wasmOverride={wasmOverride} /> : <Spin spinning={true} />,
     },
+    */
     {
       key: 'replay-block',
       label: 'Replay Block',
       children: api && endpoint ? <ReplayBlock api={api} endpoint={endpoint} wasmOverride={wasmOverride} /> : <Spin spinning={true} />,
+    },
+    {
+      key: 'dry-run-extrinsic',
+      label: 'Dry Run Extrinsic',
+      children: api && endpoint ? <DryRunExtrinsic api={api} endpoint={endpoint} wasmOverride={wasmOverride} /> : <Spin spinning={true} />,
     },
     {
       key: 'state-call',
