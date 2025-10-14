@@ -1,4 +1,4 @@
-import { setup } from '@acala-network/chopsticks-core'
+import { setStorage, setup } from '@acala-network/chopsticks-core'
 import { runTask, taskHandler } from '@acala-network/chopsticks-core'
 import { IdbDatabase } from '@acala-network/chopsticks-db/browser'
 import type { ApiPromise } from '@polkadot/api'
@@ -6,13 +6,14 @@ import type { SubmittableExtrinsic } from '@polkadot/api/types'
 import type { Call, ExtrinsicPayload } from '@polkadot/types/interfaces'
 import { assert, compactToU8a, isHex, u8aConcat, u8aEq } from '@polkadot/util'
 import type { HexString } from '@polkadot/util/types'
-import { Button, Card, Collapse, Divider, Form, Input, Space, Spin, Typography } from 'antd'
+import { Alert, Button, Card, Collapse, Divider, Form, Input, Popconfirm, Space, Spin, Tag, Tooltip, Typography } from 'antd'
 import { nanoid } from 'nanoid'
-import React, { useCallback, useState } from 'react'
+import React, { useCallback, useMemo, useState } from 'react'
 import { JSONTree } from 'react-json-tree'
 import DiffViewer from './DiffViewer'
 import { decodeStorageDiff } from './helper'
 
+const ALICE = '5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY'
 const { Panel } = Collapse
 
 export type DryRunExtrinsicProps = {
@@ -21,32 +22,22 @@ export type DryRunExtrinsicProps = {
   wasmOverride: File | undefined
 }
 
-type ExtrinsicInfo = {
-  hex: string
-  id: string
-}
+/* ----------------------------- decode helpers ----------------------------- */
 
-// Extrinsic decoder from polkadot-js
-// https://github.com/polkadot-js/apps/blob/76ca1dbe9d07a47d4dfd49807620e8b7412cb680/packages/page-extrinsics/src/Decoder.tsx#L58
-/**
- * Decode a hex‐encoded extrinsic (or call/payload) into a SubmittableExtrinsic
- * using the API’s metadata.
- */
+// Same decoder you had, kept intact
 function decodeExtrinsic(api: ApiPromise, hex: string): SubmittableExtrinsic<'promise'> {
-  assert(isHex(hex), 'Expected a hex‑encoded call')
+  assert(isHex(hex), 'Expected a hex-encoded call')
 
   let extrinsicCall: Call
   let extrinsicPayload: ExtrinsicPayload | null = null
   let decoded: SubmittableExtrinsic<'promise'> | null = null
 
   try {
-    // 1) Try as full signed/unsigned extrinsic
     const tx = api.tx(hex)
     assert(tx.toHex() === hex, 'Length mismatch when decoding as Extrinsic')
     decoded = tx
     extrinsicCall = api.createType('Call', decoded.method)
   } catch {
-    // 2) Try as bare Call or as un‑prefixed payload
     try {
       extrinsicCall = api.createType('Call', hex)
       const callHex = extrinsicCall.toHex()
@@ -54,27 +45,23 @@ function decodeExtrinsic(api: ApiPromise, hex: string): SubmittableExtrinsic<'pr
       if (callHex === hex) {
         // plain Call
       } else if (hex.startsWith(callHex)) {
-        // un‑prefixed payload: compact length + method + args
         const prefixed = u8aConcat(compactToU8a(extrinsicCall.encodedLength), hex)
         extrinsicPayload = api.createType('ExtrinsicPayload', prefixed)
-        assert(u8aEq(extrinsicPayload.toU8a(), prefixed), 'Mismatch decoding un‑prefixed payload')
+        assert(u8aEq(extrinsicPayload.toU8a(), prefixed), 'Mismatch decoding un-prefixed payload')
         extrinsicCall = api.createType('Call', extrinsicPayload.method.toHex())
       } else {
         throw new Error('Call length mismatch')
       }
     } catch {
-      // 3) Fallback: treat as fully‑prefixed payload
       extrinsicPayload = api.createType('ExtrinsicPayload', hex)
       assert(extrinsicPayload.toHex() === hex, 'Cannot decode as Call or ExtrinsicPayload')
       extrinsicCall = api.createType('Call', extrinsicPayload.method.toHex())
     }
   }
 
-  // Find the corresponding method on api.tx
   const { method, section } = api.registry.findMetaCall(extrinsicCall.callIndex)
   const extrinsicFn = (api.tx as any)[section][method]
 
-  // If we haven’t yet built a SubmittableExtrinsic, do so now
   if (!decoded) {
     decoded = extrinsicFn(...extrinsicCall.args)
   }
@@ -82,23 +69,214 @@ function decodeExtrinsic(api: ApiPromise, hex: string): SubmittableExtrinsic<'pr
   return decoded
 }
 
+// --- types ---
+type OriginMode = 'unsigned' | 'signed'
+
+type UIExtrinsic = {
+  id: string
+  source: 'block' | 'extra'
+  hex: string
+  originalHex?: string
+  edited?: boolean
+  human?: any
+  methodName?: string
+  error?: string
+
+  originMode: OriginMode
+  originAddress?: string // ss58
+}
+
+type SignCtx = {
+  genesisHash: HexString
+  blockHash: HexString
+  runtimeVersion: any // RpcRuntimeVersion
+  signedExtensions: string[]
+  era?: number // default 0
+  nonce?: number // default 0
+  tip?: number // default 0
+}
+
+function ensure0x(hex: string) {
+  const h = hex.trim()
+  return h.startsWith('0x') ? h : `0x${h}`
+}
+
+function deriveOriginFromHex(api: ApiPromise, hex: string): { mode: OriginMode; address?: string } {
+  try {
+    const ex = api.createType('Extrinsic', ensure0x(hex)) as any
+    if (ex.isSigned) return { mode: 'signed', address: ex.signer.toString() }
+  } catch {}
+  return { mode: 'unsigned' }
+}
+
+// Build once per block number
+async function makeSignCtx(api: ApiPromise, blockNumber: number): Promise<SignCtx> {
+  const blockHash = (await api.rpc.chain.getBlockHash(blockNumber)).toHex() as HexString
+  const runtimeVersion = await api.rpc.state.getRuntimeVersion(blockHash)
+  const genesisHash = api.genesisHash.toHex() as HexString
+  const signedExtensions = api.registry.signedExtensions
+
+  return {
+    genesisHash,
+    blockHash,
+    runtimeVersion,
+    signedExtensions,
+    era: 0,
+    nonce: 0,
+    tip: 0,
+  }
+}
+
+function buildUIExtrinsic(api: ApiPromise, hexIn: string, source: UIExtrinsic['source'], originalHex?: string): UIExtrinsic {
+  const hex = ensure0x(hexIn)
+  const id = nanoid()
+  let human: any | undefined
+  let methodName: string | undefined
+  let error: string | undefined
+
+  try {
+    const decoded = decodeExtrinsic(api, hex)
+    human = decoded.toHuman()
+    const meta = api.registry.findMetaCall(decoded.method.callIndex)
+    methodName = `${meta.section}.${meta.method}`
+  } catch (e: any) {
+    error = e?.message || 'Decode failed'
+  }
+
+  const origin = source === 'block' ? deriveOriginFromHex(api, hex) : { mode: 'unsigned' }
+
+  return {
+    id,
+    source,
+    hex,
+    originalHex,
+    edited: !!(originalHex && originalHex !== hex),
+    human: human ? { ...human, hex } : undefined,
+    methodName,
+    error,
+    originMode: origin.mode,
+    originAddress: origin.address,
+  }
+}
+function materializeExtrinsicHex(api: ApiPromise, item: UIExtrinsic, ctx?: SignCtx): HexString {
+  const hex = ensure0x(item.hex)
+
+  // Keep original bytes if unchanged & origin unchanged
+  const originUnchanged = item.source === 'block' && !item.edited && item.originMode === (item.originAddress ? 'signed' : 'unsigned')
+
+  if (originUnchanged) return hex as HexString
+
+  // Decode to callable
+  const base = decodeExtrinsic(api, hex)
+  const meta = api.registry.findMetaCall(base.method.callIndex)
+  const extrinsicFn = (api.tx as any)[meta.section][meta.method]
+  const rebuilt = extrinsicFn(...base.method.args)
+
+  if (item.originMode === 'unsigned') {
+    // Strip any signature by re-encoding unsigned
+    return rebuilt.toHex() as HexString
+  }
+
+  // Signed: attach fake signature with full ctx
+  const addr = item.originAddress?.trim()
+  assert(addr, 'Signed origin requires an address')
+  assert(ctx, 'signFake requires a runtime context (ctx)')
+  ;(rebuilt as any).signFake(addr, {
+    ...ctx,
+    era: ctx.era ?? 0,
+    nonce: ctx.nonce ?? 0,
+    tip: ctx.tip ?? 0,
+  })
+
+  return rebuilt.toHex() as HexString
+}
+
+/* --------------------------------- component -------------------------------- */
+
 const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOverride }) => {
   const [form] = Form.useForm()
   const [messageText, setMessageText] = useState<string>()
   const [isLoading, setIsLoading] = useState(false)
   const [storageDiff, setStorageDiff] = useState<Awaited<ReturnType<typeof decodeStorageDiff>>>()
   const [blockInfo, setBlockInfo] = useState<{ number: number; hash: string } | null>(null)
-  const [blockExtrinsics, setBlockExtrinsics] = useState<ExtrinsicInfo[] | null>(null)
-  const [decodedExtrinsics, setDecodedExtrinsics] = useState<any[] | null>(null)
 
-  const onFinish = useCallback(
+  // Stage extras before first Run; persist across runs
+  const [stagedExtras, setStagedExtras] = useState<UIExtrinsic[]>([])
+  // Last fetched block extrinsics (editable/removable in the UI after Run)
+  const [blockItems, setBlockItems] = useState<UIExtrinsic[]>([])
+  // Textarea for staging extras
+  const [pasteInput, setPasteInput] = useState<string>('')
+
+  const combinedList: UIExtrinsic[] = useMemo(() => {
+    // Order: block first (as in the chain), then extras appended
+    return [...blockItems, ...stagedExtras]
+  }, [blockItems, stagedExtras])
+
+  /* --------------------- staging extras (pre-Run and later) --------------------- */
+
+  const addPastedExtras = useCallback(() => {
+    const tokens = pasteInput
+      .split(/[\s,;\n\r]+/)
+      .map((x) => x.trim())
+      .filter(Boolean)
+
+    if (tokens.length === 0) return
+
+    const built = tokens.map((hex) => buildUIExtrinsic(api, hex, 'extra'))
+    setStagedExtras((prev) => [...prev, ...built])
+    setPasteInput('')
+  }, [api, pasteInput])
+
+  const clearExtras = useCallback(() => {
+    setStagedExtras([])
+  }, [])
+
+  const removeItem = useCallback((id: string) => {
+    setBlockItems((prev) => prev.filter((x) => x.id !== id))
+    setStagedExtras((prev) => prev.filter((x) => x.id !== id))
+  }, [])
+
+  const updateItemHex = useCallback(
+    (id: string, newHex: string) => {
+      setBlockItems((prev) =>
+        prev.map((x) => (x.id === id ? { ...buildUIExtrinsic(api, newHex, 'block', x.originalHex ?? x.hex), id } : x)),
+      )
+      setStagedExtras((prev) => prev.map((x) => (x.id === id ? { ...buildUIExtrinsic(api, newHex, 'extra'), id } : x)))
+    },
+    [api],
+  )
+
+  const forceDecode = useCallback(
+    (id: string) => {
+      // Use current hex to rebuild/refresh decode
+      const all = [...blockItems, ...stagedExtras]
+      const cur = all.find((x) => x.id === id)
+      if (!cur) return
+      updateItemHex(id, cur.hex)
+    },
+    [blockItems, stagedExtras, updateItemHex],
+  )
+
+  const setItemOriginMode = useCallback((id: string, mode: OriginMode) => {
+    setBlockItems((prev) => prev.map((x) => (x.id === id ? { ...x, originMode: mode } : x)))
+    setStagedExtras((prev) => prev.map((x) => (x.id === id ? { ...x, originMode: mode } : x)))
+  }, [])
+
+  const setItemOriginAddress = useCallback((id: string, address: string) => {
+    setBlockItems((prev) => prev.map((x) => (x.id === id ? { ...x, originAddress: address } : x)))
+    setStagedExtras((prev) => prev.map((x) => (x.id === id ? { ...x, originAddress: address } : x)))
+  }, [])
+
+  /* ------------------------------------ Run ----------------------------------- */
+
+  const fetchBlockAndAppendExtras = useCallback(
     async (values: any) => {
+      // Reset UI
       setIsLoading(true)
       setMessageText('Initializing…')
       setStorageDiff(undefined)
       setBlockInfo(null)
-      setBlockExtrinsics(null)
-      setDecodedExtrinsics(null)
+      setBlockItems([])
 
       // 1) pick block
       const targetBlock =
@@ -114,30 +292,26 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
       })
       setMessageText('Chopsticks ready')
 
-      // 3) fetch header & set info
+      // 3) header
       const head = await chain.head.header
-      setBlockInfo({ number: head.number.toNumber(), hash: head.hash.toHex() })
+      const blockNumber = head.number.toNumber()
+      setBlockInfo({ number: blockNumber, hash: head.hash.toHex() })
 
-      // 4) get raw hex extrinsics
+      // 4) get block extrinsics and map to UI (source=block)
       const rawExts = await chain.head.extrinsics
-      const infos = rawExts.map((ext) => {
+      const blockUI = rawExts.map((ext) => {
         const hex = typeof ext === 'string' ? ext : ext.toHex()
-        return { id: nanoid(), hex }
+        return buildUIExtrinsic(api, hex, 'block', hex)
       })
-      setBlockExtrinsics(infos)
+      setBlockItems(blockUI)
+      // 5) do dry run with combined list (block + current staged extras)
+      const signCtx = await makeSignCtx(api, blockNumber)
+      const allHex = [...blockUI, ...stagedExtras].map((x) => materializeExtrinsicHex(api, x, signCtx))
 
-      // 5) decode each via our helper
-      const decoded = infos.map(({ hex }) => {
-        return { ...decodeExtrinsic(api, hex).toHuman(), hex: { hex } }
-      })
-      setDecodedExtrinsics(decoded)
-
-      // 6) run dry‑run & diff (unchanged)
-      const dryRun = async () => {
+      const runDryRun = async () => {
         try {
           const header = await chain.head.header
-          const block = chain.head
-          const parent = await block.parentBlock
+          const parent = await chain.head.parentBlock
           if (!parent) throw new Error('No parent block')
 
           if (wasmOverride) {
@@ -148,17 +322,36 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
             parent.setWasm(wasmHex as HexString)
           }
 
+          try {
+            // Give Alice some funds
+            await setStorage(chain, {
+              system: {
+                account: [
+                  [
+                    [ALICE],
+                    {
+                      providers: 1,
+                      data: {
+                        free: '1000000000000',
+                      },
+                    },
+                  ],
+                ],
+              },
+            })
+          } catch (e) {
+            console.error('Enable to override Alice balances', e)
+          }
+
           const wasm = await parent.wasm
           const calls: [string, HexString[]][] = [
             ['Core_initialize_block', [header.toHex()]],
-            ...rawExts.map(
-              (ext) => ['BlockBuilder_apply_extrinsic', [typeof ext === 'string' ? ext : ext.toHex()]] as [string, HexString[]],
-            ),
+            ...allHex.map((hex) => ['BlockBuilder_apply_extrinsic', [hex]] as [string, HexString[]]),
             ['BlockBuilder_finalize_block', []],
           ]
 
           const result = await runTask(
-            { wasm, calls, mockSignatureHost: false, allowUnresolvedImports: false, runtimeLogLevel: 5 },
+            { wasm, calls, mockSignatureHost: true, allowUnresolvedImports: false, runtimeLogLevel: 5 },
             taskHandler(parent),
           )
           if ('Error' in result) throw new Error(result.Error)
@@ -169,79 +362,247 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
         }
       }
 
-      setMessageText('Running dry‑run…')
-      const diff = await dryRun()
+      setMessageText('Running dry-run…')
+      const diff = await runDryRun()
       if (diff) {
         setStorageDiff(diff)
         setMessageText('')
       } else {
-        setMessageText('Dry‑run failed')
+        setMessageText('Dry-run failed')
       }
 
       setIsLoading(false)
     },
-    [api, endpoint, wasmOverride],
+    [api, endpoint, stagedExtras, wasmOverride],
   )
+
+  // Run-without-refetch button (keeps current edits/removals)
+  const dryRunCurrentList = useCallback(async () => {
+    if (!blockInfo) return
+    setIsLoading(true)
+    setMessageText('Running dry-run (current list)…')
+    setStorageDiff(undefined)
+
+    const chain = await setup({
+      endpoint,
+      block: blockInfo.number,
+      mockSignatureHost: true,
+      db: new IdbDatabase('cache'),
+      runtimeLogLevel: 5,
+    })
+
+    const blockNumber = blockInfo.number
+    const signCtx = await makeSignCtx(api, blockNumber)
+    const allHex = combinedList.map((x) => materializeExtrinsicHex(api, x, signCtx))
+
+    try {
+      const header = await chain.head.header
+      const parent = await chain.head.parentBlock
+      if (!parent) throw new Error('No parent block')
+
+      if (wasmOverride) {
+        const buf = new Uint8Array(await wasmOverride.arrayBuffer())
+        const wasmHex = `0x${Array.from(buf)
+          .map((b) => b.toString(16).padStart(2, '0'))
+          .join('')}`
+        parent.setWasm(wasmHex as HexString)
+      }
+
+      const wasm = await parent.wasm
+      const calls: [string, HexString[]][] = [
+        ['Core_initialize_block', [header.toHex()]],
+        ...allHex.map((hex) => ['BlockBuilder_apply_extrinsic', [hex]] as [string, HexString[]]),
+        ['BlockBuilder_finalize_block', []],
+      ]
+
+      const result = await runTask(
+        { wasm, calls, mockSignatureHost: true, allowUnresolvedImports: false, runtimeLogLevel: 5 },
+        taskHandler(parent),
+      )
+
+      if ('Error' in result) throw new Error(result.Error)
+      const diff = await decodeStorageDiff(parent, result.Call.storageDiff)
+      setStorageDiff(diff)
+      setMessageText('')
+    } catch (e: any) {
+      console.error(e)
+      setMessageText('Dry-run failed')
+    } finally {
+      setIsLoading(false)
+    }
+  }, [api, blockInfo, endpoint, wasmOverride, combinedList])
+
+  /* --------------------------------- render --------------------------------- */
 
   return (
     <div>
-      <Form form={form} onFinish={onFinish} initialValues={{ blockNumber: 'latest' }} disabled={isLoading}>
-        <Form.Item label="Block Number" name="blockNumber" tooltip="Use 'latest' or specify a block number">
-          <Input style={{ width: 200 }} />
-        </Form.Item>
+      <Form
+        form={form}
+        onFinish={fetchBlockAndAppendExtras}
+        initialValues={{ blockNumber: 'latest' }}
+        disabled={isLoading}
+        layout="vertical"
+      >
+        <Space align="end" wrap>
+          <Form.Item label="Block Number" name="blockNumber" tooltip="Use 'latest' or specify a block number">
+            <Input style={{ width: 220 }} placeholder="latest or a number" />
+          </Form.Item>
 
-        <Form.Item>
-          <Button type="primary" htmlType="submit">
-            Run
-          </Button>
-        </Form.Item>
+          <Form.Item>
+            <Space>
+              <Button type="primary" htmlType="submit">
+                Run (fetch & dry-run)
+              </Button>
+              <Tooltip title="Re-run using the current list (no refetch)">
+                <Button onClick={dryRunCurrentList} disabled={!blockInfo}>
+                  Dry-run current list
+                </Button>
+              </Tooltip>
+            </Space>
+          </Form.Item>
 
-        <Form.Item>
-          <Space>
-            <Spin spinning={isLoading} />
-            <Typography.Text>{messageText}</Typography.Text>
-          </Space>
-        </Form.Item>
+          <Form.Item>
+            <Space>
+              <Spin spinning={isLoading} />
+              <Typography.Text>{messageText}</Typography.Text>
+            </Space>
+          </Form.Item>
+        </Space>
 
         {blockInfo && (
           <Form.Item>
-            <Space direction="vertical">
-              <Typography.Text strong>Block #:</Typography.Text>
+            <Space direction="vertical" size={0}>
+              <Typography.Text strong>Block #</Typography.Text>
               <Typography.Text>{blockInfo.number}</Typography.Text>
-              <Typography.Text strong>Hash:</Typography.Text>
+              <Typography.Text strong>Hash</Typography.Text>
               <Typography.Text code>{blockInfo.hash}</Typography.Text>
             </Space>
           </Form.Item>
         )}
       </Form>
 
+      {/* ---------- Stage extras before the first Run (and anytime) ---------- */}
+      <Card size="small" title="Add extra hex extrinsics (one per line)">
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Input.TextArea rows={3} value={pasteInput} placeholder="0x....\n0x...." onChange={(e) => setPasteInput(e.target.value)} />
+          <Space>
+            <Button onClick={addPastedExtras} disabled={!pasteInput.trim()}>
+              Add
+            </Button>
+            <Popconfirm title="Clear all staged extras?" onConfirm={clearExtras} okButtonProps={{ danger: true }}>
+              <Button danger>Clear extras</Button>
+            </Popconfirm>
+          </Space>
+        </Space>
+      </Card>
+
       <Divider />
 
-      {decodedExtrinsics && (
-        <Card size="small" title="Decoded Extrinsics">
-          <div style={{ maxHeight: 400, overflow: 'auto' }}>
-            <Collapse accordion bordered={false} expandIconPosition="right">
-              {decodedExtrinsics.map((item, idx) => {
-                // Pull out method name (toHuman gives .method) or fallback
-                const methodName = `${item.method.section}.${item.method.method}`
-                return (
-                  <Panel key={nanoid()} header={`${idx}: ${methodName}`} style={{ padding: 0 }}>
-                    <div style={{ padding: '12px' }}>
-                      <JSONTree
-                        data={item}
-                        hideRoot={true}
-                        shouldExpandNodeInitially={(keyPath) => keyPath.length <= 1 && keyPath[0] !== 'hex'}
-                        theme="monokai"
-                        invertTheme={true}
-                      />
-                    </div>
-                  </Panel>
-                )
-              })}
-            </Collapse>
-          </div>
-        </Card>
-      )}
+      {/* -------------------------- Editable decoded list -------------------------- */}
+      <Card size="small" title="Extrinsics (block + extras)">
+        <div style={{ maxHeight: 460, overflow: 'auto' }}>
+          <Collapse accordion bordered={false} expandIconPosition="right">
+            {combinedList.map((item, idx) => {
+              const headerLeft = `${idx}: ${item.methodName ?? (item.error ? 'Decode error' : 'Unknown method')}`
+              const isExtra = item.source === 'extra'
+              const header = (
+                <Space>
+                  <span>{headerLeft}</span>
+                  {isExtra ? <Tag color="green">extra</Tag> : <Tag color="blue">block</Tag>}
+                  {item.edited && <Tag color="gold">edited</Tag>}
+                  {item.error && <Tag color="red">error</Tag>}
+                </Space>
+              )
+              return (
+                <Panel
+                  key={item.id}
+                  header={header}
+                  style={{
+                    padding: 0,
+                    background: isExtra ? 'rgba(0,128,0,0.06)' : undefined,
+                    borderRadius: 8,
+                    border: isExtra ? '1px solid rgba(0,128,0,0.15)' : '1px solid rgba(0,0,0,0.06)',
+                    marginBottom: 8,
+                  }}
+                  extra={
+                    <Space>
+                      <Tooltip title="Re-decode">
+                        <Button
+                          size="small"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            forceDecode(item.id)
+                          }}
+                        >
+                          Decode
+                        </Button>
+                      </Tooltip>
+                      <Popconfirm
+                        title="Remove this extrinsic?"
+                        onConfirm={(e) => {
+                          e?.stopPropagation()
+                          removeItem(item.id)
+                        }}
+                        onCancel={(e) => e?.stopPropagation()}
+                      >
+                        <Button size="small" danger onClick={(e) => e.stopPropagation()}>
+                          Remove
+                        </Button>
+                      </Popconfirm>
+                    </Space>
+                  }
+                >
+                  <div style={{ padding: 12 }}>
+                    <Typography.Text type="secondary">Hex</Typography.Text>
+                    <Input.TextArea
+                      rows={3}
+                      value={item.hex}
+                      onChange={(e) => updateItemHex(item.id, e.target.value)}
+                      onBlur={(e) => updateItemHex(item.id, e.target.value)}
+                    />
+                    {item.error ? (
+                      <Alert style={{ marginTop: 8 }} type="error" message={item.error} showIcon />
+                    ) : (
+                      <div style={{ marginTop: 12 }}>
+                        <Typography.Text type="secondary">Decoded</Typography.Text>
+                        <JSONTree
+                          data={{ ...(item.human ?? {}), hex: item.hex }}
+                          hideRoot={true}
+                          shouldExpandNodeInitially={(keyPath) => keyPath.length <= 1 && keyPath[0] !== 'hex'}
+                          theme="monokai"
+                          invertTheme={true}
+                        />
+                      </div>
+                    )}
+                    <Space style={{ marginTop: 8 }} wrap>
+                      <Typography.Text type="secondary">Origin</Typography.Text>
+                      <select
+                        value={item.originMode}
+                        onChange={(e) => setItemOriginMode(item.id, e.target.value as OriginMode)}
+                        style={{ padding: 4 }}
+                      >
+                        <option value="unsigned">Unsigned</option>
+                        <option value="signed">Signed</option>
+                      </select>
+
+                      {item.originMode === 'signed' && (
+                        <Input
+                          style={{ width: 360 }}
+                          placeholder="ss58 address"
+                          value={item.originAddress}
+                          onChange={(e) => setItemOriginAddress(item.id, e.target.value)}
+                        />
+                      )}
+
+                      {item.source === 'block' && item.originAddress && <Tag>derived: {item.originAddress.slice(0, 10)}…</Tag>}
+                    </Space>
+                  </div>
+                </Panel>
+              )
+            })}
+          </Collapse>
+        </div>
+      </Card>
 
       <Divider />
 
