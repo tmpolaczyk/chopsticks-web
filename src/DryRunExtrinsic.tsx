@@ -3,8 +3,11 @@ import { runTask, taskHandler } from '@acala-network/chopsticks-core'
 import { IdbDatabase } from '@acala-network/chopsticks-db/browser'
 import type { ApiPromise } from '@polkadot/api'
 import type { SubmittableExtrinsic } from '@polkadot/api/types'
+import type { GenericExtrinsic } from '@polkadot/types'
 import type { Call, ExtrinsicPayload } from '@polkadot/types/interfaces'
+import type { IExtrinsicEra } from '@polkadot/types/types'
 import { assert, compactToU8a, isHex, u8aConcat, u8aEq } from '@polkadot/util'
+import { decodeAddress, encodeAddress, isEthereumAddress } from '@polkadot/util-crypto'
 import type { HexString } from '@polkadot/util/types'
 import { Alert, Button, Card, Collapse, Divider, Form, Input, Popconfirm, Space, Spin, Tag, Tooltip, Typography } from 'antd'
 import { nanoid } from 'nanoid'
@@ -69,6 +72,28 @@ function decodeExtrinsic(api: ApiPromise, hex: string): SubmittableExtrinsic<'pr
   return decoded
 }
 
+// Shapes produced by your decodeStorageDiff
+type StorageState = Record<
+  string, // pallet
+  Record<
+    string, // storage item
+    Array<[any[], any | null]> // [args[], value] (null => delete)
+  >
+>
+type DecodedEnvelope = {
+  oldState: StorageState
+  newState: StorageState
+  delta: unknown // jsondiffpatch delta; we ignore it here
+}
+
+/** Persist the "after" state from Phase A into Chopsticks storage. */
+async function applyDecodedDiffToState(chain: any, env: DecodedEnvelope) {
+  // If you ever want to skip events, uncomment:
+  // if (env.newState.system?.events) env.newState.system.events = []
+
+  await setStorage(chain, env.newState)
+}
+
 // --- types ---
 type OriginMode = 'unsigned' | 'signed'
 
@@ -91,7 +116,7 @@ type SignCtx = {
   blockHash: HexString
   runtimeVersion: any // RpcRuntimeVersion
   signedExtensions: string[]
-  era?: number // default 0
+  era?: IExtrinsicEra
   nonce?: number // default 0
   tip?: number // default 0
 }
@@ -99,6 +124,17 @@ type SignCtx = {
 function ensure0x(hex: string) {
   const h = hex.trim()
   return h.startsWith('0x') ? h : `0x${h}`
+}
+
+function isValidSs58(addr?: string) {
+  if (!addr) return false
+  try {
+    const u8 = decodeAddress(addr)
+    encodeAddress(u8)
+    return true
+  } catch {
+    return false
+  }
 }
 
 function deriveOriginFromHex(api: ApiPromise, hex: string): { mode: OriginMode; address?: string } {
@@ -109,22 +145,12 @@ function deriveOriginFromHex(api: ApiPromise, hex: string): { mode: OriginMode; 
   return { mode: 'unsigned' }
 }
 
-// Build once per block number
 async function makeSignCtx(api: ApiPromise, blockNumber: number): Promise<SignCtx> {
   const blockHash = (await api.rpc.chain.getBlockHash(blockNumber)).toHex() as HexString
   const runtimeVersion = await api.rpc.state.getRuntimeVersion(blockHash)
   const genesisHash = api.genesisHash.toHex() as HexString
   const signedExtensions = api.registry.signedExtensions
-
-  return {
-    genesisHash,
-    blockHash,
-    runtimeVersion,
-    signedExtensions,
-    era: 0,
-    nonce: 0,
-    tip: 0,
-  }
+  return { genesisHash, blockHash, runtimeVersion, signedExtensions, nonce: 0, tip: 0 }
 }
 
 function buildUIExtrinsic(api: ApiPromise, hexIn: string, source: UIExtrinsic['source'], originalHex?: string): UIExtrinsic {
@@ -143,7 +169,8 @@ function buildUIExtrinsic(api: ApiPromise, hexIn: string, source: UIExtrinsic['s
     error = e?.message || 'Decode failed'
   }
 
-  const origin = source === 'block' ? deriveOriginFromHex(api, hex) : { mode: 'unsigned' }
+  // Default extras → Signed(ALICE) (sr25519)
+  const origin = source === 'block' ? deriveOriginFromHex(api, hex) : { mode: 'signed' as const, address: ALICE }
 
   return {
     id,
@@ -158,32 +185,29 @@ function buildUIExtrinsic(api: ApiPromise, hexIn: string, source: UIExtrinsic['s
     originAddress: origin.address,
   }
 }
+
 function materializeExtrinsicHex(api: ApiPromise, item: UIExtrinsic, ctx?: SignCtx): HexString {
   const hex = ensure0x(item.hex)
 
-  // Keep original bytes if unchanged & origin unchanged
   const originUnchanged = item.source === 'block' && !item.edited && item.originMode === (item.originAddress ? 'signed' : 'unsigned')
-
   if (originUnchanged) return hex as HexString
 
-  // Decode to callable
   const base = decodeExtrinsic(api, hex)
   const meta = api.registry.findMetaCall(base.method.callIndex)
   const extrinsicFn = (api.tx as any)[meta.section][meta.method]
   const rebuilt = extrinsicFn(...base.method.args)
 
   if (item.originMode === 'unsigned') {
-    // Strip any signature by re-encoding unsigned
     return rebuilt.toHex() as HexString
   }
 
-  // Signed: attach fake signature with full ctx
   const addr = item.originAddress?.trim()
   assert(addr, 'Signed origin requires an address')
-  assert(ctx, 'signFake requires a runtime context (ctx)')
-  ;(rebuilt as any).signFake(addr, {
+  assert(!isEthereumAddress(addr) && isValidSs58(addr), 'Runtime expects sr25519/ss58 (e.g. ALICE), not 0x…')
+  assert(ctx, 'signFake requires a runtime context')
+  ;(rebuilt as GenericExtrinsic).signFake(addr, {
     ...ctx,
-    era: ctx.era ?? 0,
+    era: ctx.era,
     nonce: ctx.nonce ?? 0,
     tip: ctx.tip ?? 0,
   })
@@ -322,40 +346,53 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
             parent.setWasm(wasmHex as HexString)
           }
 
+          // Seed ALICE once on base state so both phases see it
           try {
-            // Give Alice some funds
             await setStorage(chain, {
               system: {
-                account: [
-                  [
-                    [ALICE],
-                    {
-                      providers: 1,
-                      data: {
-                        free: '1000000000000',
-                      },
-                    },
-                  ],
-                ],
+                account: [[[ALICE], { providers: 1, data: { free: '1000000000000' } }]],
               },
             })
           } catch (e) {
-            console.error('Enable to override Alice balances', e)
+            console.error('Unable to seed Alice balances', e)
           }
 
+          const blockNumber = header.number.toNumber()
+          const signCtx = await makeSignCtx(api, blockNumber)
+          const blockHexes = blockItems.map((x) => materializeExtrinsicHex(api, x, signCtx))
+          const extraHexes = stagedExtras.map((x) => materializeExtrinsicHex(api, x, signCtx))
           const wasm = await parent.wasm
-          const calls: [string, HexString[]][] = [
-            ['Core_initialize_block', [header.toHex()]],
-            ...allHex.map((hex) => ['BlockBuilder_apply_extrinsic', [hex]] as [string, HexString[]]),
-            ['BlockBuilder_finalize_block', []],
-          ]
 
-          const result = await runTask(
-            { wasm, calls, mockSignatureHost: true, allowUnresolvedImports: false, runtimeLogLevel: 5 },
+          // Phase A — init + block extrinsics (NO finalize)
+          const callsA: [string, HexString[]][] = [
+            ['Core_initialize_block', [header.toHex()]],
+            ...blockHexes.map((hex) => ['BlockBuilder_apply_extrinsic', [hex]] as [string, HexString[]]),
+            // (intentionally NO finalize here)
+          ]
+          const resA = await runTask(
+            { wasm, calls: callsA, mockSignatureHost: true, allowUnresolvedImports: false, runtimeLogLevel: 5 },
             taskHandler(parent),
           )
-          if ('Error' in result) throw new Error(result.Error)
-          return await decodeStorageDiff(parent, result.Call.storageDiff)
+          if ('Error' in resA) throw new Error(resA.Error)
+
+          const decA = await decodeStorageDiff(parent, resA.Call.storageDiff)
+
+          // ✅ commit Phase-A effects so Phase B starts from post-block state
+          await applyDecodedDiffToState(chain, decA)
+
+          // Phase B — ONLY extras + finalize
+          const callsB: [string, HexString[]][] = [
+            ...extraHexes.map((hex) => ['BlockBuilder_apply_extrinsic', [hex]] as [string, HexString[]]),
+            ['BlockBuilder_finalize_block', []],
+          ]
+          const resB = await runTask(
+            { wasm, calls: callsB, mockSignatureHost: true, allowUnresolvedImports: false, runtimeLogLevel: 5 },
+            taskHandler(parent),
+          )
+          if ('Error' in resB) throw new Error(resB.Error)
+
+          const extrasOnly = await decodeStorageDiff(parent, resB.Call.storageDiff)
+          return extrasOnly
         } catch (e: any) {
           console.error(e)
           return undefined
@@ -373,7 +410,7 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
 
       setIsLoading(false)
     },
-    [api, endpoint, stagedExtras, wasmOverride],
+    [api, endpoint, stagedExtras, wasmOverride, blockItems],
   )
 
   // Run-without-refetch button (keeps current edits/removals)
