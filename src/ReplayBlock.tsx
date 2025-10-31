@@ -2,9 +2,8 @@ import { setup } from '@acala-network/chopsticks-core'
 import { runTask, taskHandler } from '@acala-network/chopsticks-core'
 import { IdbDatabase } from '@acala-network/chopsticks-db/browser'
 import type { ApiPromise } from '@polkadot/api'
-import type { SubmittableExtrinsic } from '@polkadot/api/types'
-import type { Call, ExtrinsicPayload } from '@polkadot/types/interfaces'
-import { assert, compactToU8a, isHex, u8aConcat, u8aEq } from '@polkadot/util'
+import type { Registry } from '@polkadot/types/types'
+import { assert, isHex } from '@polkadot/util'
 import type { HexString } from '@polkadot/util/types'
 import { Button, Card, Collapse, Divider, Form, Input, Space, Spin, Typography } from 'antd'
 import { nanoid } from 'nanoid'
@@ -26,60 +25,17 @@ type ExtrinsicInfo = {
   id: string
 }
 
-// Extrinsic decoder from polkadot-js
-// https://github.com/polkadot-js/apps/blob/76ca1dbe9d07a47d4dfd49807620e8b7412cb680/packages/page-extrinsics/src/Decoder.tsx#L58
-/**
- * Decode a hex‐encoded extrinsic (or call/payload) into a SubmittableExtrinsic
- * using the API’s metadata.
- */
-function decodeExtrinsic(api: ApiPromise, hex: string): SubmittableExtrinsic<'promise'> {
-  assert(isHex(hex), 'Expected a hex‑encoded call')
+function ensure0x(hex: string) {
+  const h = hex.trim()
+  return h.startsWith('0x') ? h : `0x${h}`
+}
 
-  let extrinsicCall: Call
-  let extrinsicPayload: ExtrinsicPayload | null = null
-  let decoded: SubmittableExtrinsic<'promise'> | null = null
-
-  try {
-    // 1) Try as full signed/unsigned extrinsic
-    const tx = api.tx(hex)
-    assert(tx.toHex() === hex, 'Length mismatch when decoding as Extrinsic')
-    decoded = tx
-    extrinsicCall = api.createType('Call', decoded.method)
-  } catch {
-    // 2) Try as bare Call or as un‑prefixed payload
-    try {
-      extrinsicCall = api.createType('Call', hex)
-      const callHex = extrinsicCall.toHex()
-
-      if (callHex === hex) {
-        // plain Call
-      } else if (hex.startsWith(callHex)) {
-        // un‑prefixed payload: compact length + method + args
-        const prefixed = u8aConcat(compactToU8a(extrinsicCall.encodedLength), hex)
-        extrinsicPayload = api.createType('ExtrinsicPayload', prefixed)
-        assert(u8aEq(extrinsicPayload.toU8a(), prefixed), 'Mismatch decoding un‑prefixed payload')
-        extrinsicCall = api.createType('Call', extrinsicPayload.method.toHex())
-      } else {
-        throw new Error('Call length mismatch')
-      }
-    } catch {
-      // 3) Fallback: treat as fully‑prefixed payload
-      extrinsicPayload = api.createType('ExtrinsicPayload', hex)
-      assert(extrinsicPayload.toHex() === hex, 'Cannot decode as Call or ExtrinsicPayload')
-      extrinsicCall = api.createType('Call', extrinsicPayload.method.toHex())
-    }
-  }
-
-  // Find the corresponding method on api.tx
-  const { method, section } = api.registry.findMetaCall(extrinsicCall.callIndex)
-  const extrinsicFn = (api.tx as any)[section][method]
-
-  // If we haven’t yet built a SubmittableExtrinsic, do so now
-  if (!decoded) {
-    decoded = extrinsicFn(...extrinsicCall.args)
-  }
-
-  return decoded
+function decodeExtrinsicAt(registry: Registry, hex: string) {
+  assert(isHex(hex), 'Expected a hex-encoded extrinsic')
+  const ex: any = registry.createType('Extrinsic', ensure0x(hex))
+  const call = ex.method
+  const { section, method } = registry.findMetaCall(call.callIndex)
+  return { ex, section, method, human: ex.toHuman() }
 }
 
 const ReplayBlock: React.FC<ReplayBlockProps> = ({ api, endpoint, wasmOverride }) => {
@@ -118,6 +74,10 @@ const ReplayBlock: React.FC<ReplayBlockProps> = ({ api, endpoint, wasmOverride }
       const head = await chain.head.header
       setBlockInfo({ number: head.number.toNumber(), hash: head.hash.toHex() })
 
+      // Pin the API to this block's metadata
+      // This is to fix decode errors when replaying blocks using an older runtime version
+      const apiAt = await api.at(head.hash)
+
       // 4) get raw hex extrinsics
       const rawExts = await chain.head.extrinsics
       const infos = rawExts.map((ext) => {
@@ -126,9 +86,11 @@ const ReplayBlock: React.FC<ReplayBlockProps> = ({ api, endpoint, wasmOverride }
       })
       setBlockExtrinsics(infos)
 
-      // 5) decode each via our helper
+      // 5) decode each using the BLOCK registry
       const decoded = infos.map(({ hex }) => {
-        return { ...decodeExtrinsic(api, hex).toHuman(), hex: { hex } }
+        const d = decodeExtrinsicAt(apiAt.registry, hex)
+        const human = d?.human ?? (typeof d?.toHuman === 'function' ? d.toHuman() : d)
+        return { ...(human ?? {}), hex: { hex } }
       })
       setDecodedExtrinsics(decoded)
 

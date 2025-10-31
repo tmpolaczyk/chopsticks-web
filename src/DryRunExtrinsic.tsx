@@ -1,12 +1,10 @@
-import { setStorage, setup } from '@acala-network/chopsticks-core'
+import { type Blockchain, setStorage, setup } from '@acala-network/chopsticks-core'
 import { runTask, taskHandler } from '@acala-network/chopsticks-core'
 import { IdbDatabase } from '@acala-network/chopsticks-db/browser'
 import type { ApiPromise } from '@polkadot/api'
-import type { SubmittableExtrinsic } from '@polkadot/api/types'
 import type { GenericExtrinsic } from '@polkadot/types'
-import type { Call, ExtrinsicPayload } from '@polkadot/types/interfaces'
-import type { IExtrinsicEra } from '@polkadot/types/types'
-import { assert, compactToU8a, isHex, u8aConcat, u8aEq } from '@polkadot/util'
+import type { IExtrinsicEra, Registry } from '@polkadot/types/types'
+import { assert, isHex } from '@polkadot/util'
 import { decodeAddress, encodeAddress, isEthereumAddress } from '@polkadot/util-crypto'
 import type { HexString } from '@polkadot/util/types'
 import { Alert, Button, Card, Collapse, Divider, Form, Input, Popconfirm, Space, Spin, Tag, Tooltip, Typography } from 'antd'
@@ -26,72 +24,22 @@ export type DryRunExtrinsicProps = {
 }
 
 /* ----------------------------- decode helpers ----------------------------- */
-
-// Same decoder you had, kept intact
-function decodeExtrinsic(api: ApiPromise, hex: string): SubmittableExtrinsic<'promise'> {
-  assert(isHex(hex), 'Expected a hex-encoded call')
-
-  let extrinsicCall: Call
-  let extrinsicPayload: ExtrinsicPayload | null = null
-  let decoded: SubmittableExtrinsic<'promise'> | null = null
-
-  try {
-    const tx = api.tx(hex)
-    assert(tx.toHex() === hex, 'Length mismatch when decoding as Extrinsic')
-    decoded = tx
-    extrinsicCall = api.createType('Call', decoded.method)
-  } catch {
-    try {
-      extrinsicCall = api.createType('Call', hex)
-      const callHex = extrinsicCall.toHex()
-
-      if (callHex === hex) {
-        // plain Call
-      } else if (hex.startsWith(callHex)) {
-        const prefixed = u8aConcat(compactToU8a(extrinsicCall.encodedLength), hex)
-        extrinsicPayload = api.createType('ExtrinsicPayload', prefixed)
-        assert(u8aEq(extrinsicPayload.toU8a(), prefixed), 'Mismatch decoding un-prefixed payload')
-        extrinsicCall = api.createType('Call', extrinsicPayload.method.toHex())
-      } else {
-        throw new Error('Call length mismatch')
-      }
-    } catch {
-      extrinsicPayload = api.createType('ExtrinsicPayload', hex)
-      assert(extrinsicPayload.toHex() === hex, 'Cannot decode as Call or ExtrinsicPayload')
-      extrinsicCall = api.createType('Call', extrinsicPayload.method.toHex())
-    }
-  }
-
-  const { method, section } = api.registry.findMetaCall(extrinsicCall.callIndex)
-  const extrinsicFn = (api.tx as any)[section][method]
-
-  if (!decoded) {
-    decoded = extrinsicFn(...extrinsicCall.args)
-  }
-
-  return decoded
+function decodeExtrinsicAt(registry: Registry, hex: string) {
+  assert(isHex(hex), 'Expected a hex-encoded extrinsic')
+  const ex: any = registry.createType('Extrinsic', ensure0x(hex))
+  const call = ex.method
+  const { section, method } = registry.findMetaCall(call.callIndex)
+  return { ex, section, method, human: ex.toHuman() }
 }
 
-// Shapes produced by your decodeStorageDiff
-type StorageState = Record<
-  string, // pallet
-  Record<
-    string, // storage item
-    Array<[any[], any | null]> // [args[], value] (null => delete)
-  >
->
-type DecodedEnvelope = {
-  oldState: StorageState
-  newState: StorageState
-  delta: unknown // jsondiffpatch delta; we ignore it here
-}
+type RawStorageValues = [string, string | null][]
 
 /** Persist the "after" state from Phase A into Chopsticks storage. */
-async function applyDecodedDiffToState(chain: any, env: DecodedEnvelope) {
+async function applyDecodedDiffToState(chain: Blockchain, storageDiff: RawStorageValues): Promise<HexString> {
   // If you ever want to skip events, uncomment:
   // if (env.newState.system?.events) env.newState.system.events = []
 
-  await setStorage(chain, env.newState)
+  return await setStorage(chain, storageDiff)
 }
 
 // --- types ---
@@ -137,23 +85,22 @@ function isValidSs58(addr?: string) {
   }
 }
 
-function deriveOriginFromHex(api: ApiPromise, hex: string): { mode: OriginMode; address?: string } {
+function deriveOriginFromHex(registry: Registry, hex: string): { mode: 'unsigned' | 'signed'; address?: string } {
   try {
-    const ex = api.createType('Extrinsic', ensure0x(hex)) as any
+    const ex: any = registry.createType('Extrinsic', ensure0x(hex))
     if (ex.isSigned) return { mode: 'signed', address: ex.signer.toString() }
   } catch {}
   return { mode: 'unsigned' }
 }
 
-async function makeSignCtx(api: ApiPromise, blockNumber: number): Promise<SignCtx> {
-  const blockHash = (await api.rpc.chain.getBlockHash(blockNumber)).toHex() as HexString
+async function makeSignCtxAt(api: ApiPromise, blockHash: HexString, registry: Registry): Promise<SignCtx> {
   const runtimeVersion = await api.rpc.state.getRuntimeVersion(blockHash)
   const genesisHash = api.genesisHash.toHex() as HexString
-  const signedExtensions = api.registry.signedExtensions
+  const signedExtensions = registry.signedExtensions
   return { genesisHash, blockHash, runtimeVersion, signedExtensions, nonce: 0, tip: 0 }
 }
 
-function buildUIExtrinsic(api: ApiPromise, hexIn: string, source: UIExtrinsic['source'], originalHex?: string): UIExtrinsic {
+function buildUIExtrinsic(registry: Registry, hexIn: string, source: UIExtrinsic['source'], originalHex?: string): UIExtrinsic {
   const hex = ensure0x(hexIn)
   const id = nanoid()
   let human: any | undefined
@@ -161,16 +108,15 @@ function buildUIExtrinsic(api: ApiPromise, hexIn: string, source: UIExtrinsic['s
   let error: string | undefined
 
   try {
-    const decoded = decodeExtrinsic(api, hex)
-    human = decoded.toHuman()
-    const meta = api.registry.findMetaCall(decoded.method.callIndex)
-    methodName = `${meta.section}.${meta.method}`
+    const { section, method, human: h } = decodeExtrinsicAt(registry, hex)
+    human = h
+    methodName = `${section}.${method}`
   } catch (e: any) {
     error = e?.message || 'Decode failed'
   }
 
   // Default extras → Signed(ALICE) (sr25519)
-  const origin = source === 'block' ? deriveOriginFromHex(api, hex) : { mode: 'signed' as const, address: ALICE }
+  const origin = source === 'block' ? deriveOriginFromHex(registry, hex) : { mode: 'signed' as const, address: ALICE }
 
   return {
     id,
@@ -186,33 +132,36 @@ function buildUIExtrinsic(api: ApiPromise, hexIn: string, source: UIExtrinsic['s
   }
 }
 
-function materializeExtrinsicHex(api: ApiPromise, item: UIExtrinsic, ctx?: SignCtx): HexString {
+function materializeExtrinsicHex(registry: Registry, item: UIExtrinsic, ctx?: SignCtx): HexString {
   const hex = ensure0x(item.hex)
 
+  // If unchanged block extrinsic and origin didn’t change, reuse hex.
   const originUnchanged = item.source === 'block' && !item.edited && item.originMode === (item.originAddress ? 'signed' : 'unsigned')
   if (originUnchanged) return hex as HexString
 
-  const base = decodeExtrinsic(api, hex)
-  const meta = api.registry.findMetaCall(base.method.callIndex)
-  const extrinsicFn = (api.tx as any)[meta.section][meta.method]
-  const rebuilt = extrinsicFn(...base.method.args)
+  // Decode once with the block registry
+  const { ex: baseEx } = decodeExtrinsicAt(registry, hex)
+
+  // Rebuild from the call so we can switch between unsigned/signed deterministically
+  const rebuilt: GenericExtrinsic = registry.createType('Extrinsic', { method: baseEx.method }) as unknown as GenericExtrinsic
 
   if (item.originMode === 'unsigned') {
-    return rebuilt.toHex() as HexString
+    return (rebuilt as any).toHex() as HexString
   }
 
   const addr = item.originAddress?.trim()
   assert(addr, 'Signed origin requires an address')
   assert(!isEthereumAddress(addr) && isValidSs58(addr), 'Runtime expects sr25519/ss58 (e.g. ALICE), not 0x…')
   assert(ctx, 'signFake requires a runtime context')
-  ;(rebuilt as GenericExtrinsic).signFake(addr, {
+
+  rebuilt.signFake(addr, {
     ...ctx,
     era: ctx.era,
     nonce: ctx.nonce ?? 0,
     tip: ctx.tip ?? 0,
   })
 
-  return rebuilt.toHex() as HexString
+  return (rebuilt as any).toHex() as HexString
 }
 
 /* --------------------------------- component -------------------------------- */
@@ -224,6 +173,7 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
   const [storageDiff, setStorageDiff] = useState<Awaited<ReturnType<typeof decodeStorageDiff>>>()
   const [blockInfo, setBlockInfo] = useState<{ number: number; hash: string } | null>(null)
 
+  const [blockRegistry, setBlockRegistry] = useState<Registry | null>(null)
   // Stage extras before first Run; persist across runs
   const [stagedExtras, setStagedExtras] = useState<UIExtrinsic[]>([])
   // Last fetched block extrinsics (editable/removable in the UI after Run)
@@ -246,10 +196,11 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
 
     if (tokens.length === 0) return
 
-    const built = tokens.map((hex) => buildUIExtrinsic(api, hex, 'extra'))
+    const registry = blockRegistry ?? api.registry
+    const built = tokens.map((hex) => buildUIExtrinsic(registry, hex, 'extra'))
     setStagedExtras((prev) => [...prev, ...built])
     setPasteInput('')
-  }, [api, pasteInput])
+  }, [api, pasteInput, blockRegistry])
 
   const clearExtras = useCallback(() => {
     setStagedExtras([])
@@ -262,12 +213,13 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
 
   const updateItemHex = useCallback(
     (id: string, newHex: string) => {
+      const registry = blockRegistry ?? api.registry
       setBlockItems((prev) =>
-        prev.map((x) => (x.id === id ? { ...buildUIExtrinsic(api, newHex, 'block', x.originalHex ?? x.hex), id } : x)),
+        prev.map((x) => (x.id === id ? { ...buildUIExtrinsic(registry, newHex, 'block', x.originalHex ?? x.hex), id } : x)),
       )
-      setStagedExtras((prev) => prev.map((x) => (x.id === id ? { ...buildUIExtrinsic(api, newHex, 'extra'), id } : x)))
+      setStagedExtras((prev) => prev.map((x) => (x.id === id ? { ...buildUIExtrinsic(registry, newHex, 'extra'), id } : x)))
     },
-    [api],
+    [api, blockRegistry],
   )
 
   const forceDecode = useCallback(
@@ -301,6 +253,7 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
       setStorageDiff(undefined)
       setBlockInfo(null)
       setBlockItems([])
+      setBlockRegistry(null)
 
       // 1) pick block
       const targetBlock =
@@ -319,18 +272,22 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
       // 3) header
       const head = await chain.head.header
       const blockNumber = head.number.toNumber()
-      setBlockInfo({ number: blockNumber, hash: head.hash.toHex() })
+      const blockHash = head.hash.toHex()
+      setBlockInfo({ number: blockNumber, hash: blockHash })
+
+      const apiAt = await api.at(head.hash)
+      const registryAt = apiAt.registry
+      setBlockRegistry(registryAt)
 
       // 4) get block extrinsics and map to UI (source=block)
       const rawExts = await chain.head.extrinsics
       const blockUI = rawExts.map((ext) => {
         const hex = typeof ext === 'string' ? ext : ext.toHex()
-        return buildUIExtrinsic(api, hex, 'block', hex)
+        return buildUIExtrinsic(registryAt, hex, 'block', hex)
       })
       setBlockItems(blockUI)
       // 5) do dry run with combined list (block + current staged extras)
-      const signCtx = await makeSignCtx(api, blockNumber)
-      const allHex = [...blockUI, ...stagedExtras].map((x) => materializeExtrinsicHex(api, x, signCtx))
+      const signCtx = await makeSignCtxAt(api, blockHash, registryAt)
 
       const runDryRun = async () => {
         try {
@@ -357,10 +314,8 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
             console.error('Unable to seed Alice balances', e)
           }
 
-          const blockNumber = header.number.toNumber()
-          const signCtx = await makeSignCtx(api, blockNumber)
-          const blockHexes = blockItems.map((x) => materializeExtrinsicHex(api, x, signCtx))
-          const extraHexes = stagedExtras.map((x) => materializeExtrinsicHex(api, x, signCtx))
+          const blockHexes = blockItems.map((x) => materializeExtrinsicHex(registryAt, x, signCtx))
+          const extraHexes = stagedExtras.map((x) => materializeExtrinsicHex(registryAt, x, signCtx))
           const wasm = await parent.wasm
 
           // Phase A — init + block extrinsics (NO finalize)
@@ -369,22 +324,30 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
             ...blockHexes.map((hex) => ['BlockBuilder_apply_extrinsic', [hex]] as [string, HexString[]]),
             // (intentionally NO finalize here)
           ]
+          console.log('callsA', callsA)
           const resA = await runTask(
             { wasm, calls: callsA, mockSignatureHost: true, allowUnresolvedImports: false, runtimeLogLevel: 5 },
             taskHandler(parent),
           )
           if ('Error' in resA) throw new Error(resA.Error)
+          // TODO: we cannot decode the diff because then trying to apply it fails, as toHuman is no reversible it seems
+          //const [oldStateA, newStateA] = await decodeBlockStorageDiff(parent, resA.Call.storageDiff)
 
-          const decA = await decodeStorageDiff(parent, resA.Call.storageDiff)
+          // commit Phase-A effects so Phase B starts from post-block state
+          // Without this the next calls will complain that the block has not been initialized properly, as it will be
+          // missing timestamp inherent for example.
+          //const newBlockHashMaybe = await applyDecodedDiffToState(chain, resA.Call.storageDiff)
+          //console.log("parent hash: ", parent.hash)
+          //console.log("new hash maybe: ", newBlockHashMaybe)
 
-          // ✅ commit Phase-A effects so Phase B starts from post-block state
-          await applyDecodedDiffToState(chain, decA)
+          chain.head.pushStorageLayer().setAll(resA.Call.storageDiff)
 
           // Phase B — ONLY extras + finalize
           const callsB: [string, HexString[]][] = [
             ...extraHexes.map((hex) => ['BlockBuilder_apply_extrinsic', [hex]] as [string, HexString[]]),
             ['BlockBuilder_finalize_block', []],
           ]
+          console.log('callsB', callsB)
           const resB = await runTask(
             { wasm, calls: callsB, mockSignatureHost: true, allowUnresolvedImports: false, runtimeLogLevel: 5 },
             taskHandler(parent),
@@ -415,6 +378,7 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
 
   // Run-without-refetch button (keeps current edits/removals)
   const dryRunCurrentList = useCallback(async () => {
+    throw new Error('unimplemented')
     if (!blockInfo) return
     setIsLoading(true)
     setMessageText('Running dry-run (current list)…')
@@ -428,14 +392,14 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
       runtimeLogLevel: 5,
     })
 
-    const blockNumber = blockInfo.number
-    const signCtx = await makeSignCtx(api, blockNumber)
-    const allHex = combinedList.map((x) => materializeExtrinsicHex(api, x, signCtx))
-
     try {
       const header = await chain.head.header
       const parent = await chain.head.parentBlock
       if (!parent) throw new Error('No parent block')
+
+      const apiAt = await api.at(header.hash)
+      const registryAt = apiAt.registry
+      const signCtx = await makeSignCtxAt(api, header.hash.toHex() as HexString, registryAt)
 
       if (wasmOverride) {
         const buf = new Uint8Array(await wasmOverride.arrayBuffer())
@@ -446,6 +410,7 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
       }
 
       const wasm = await parent.wasm
+      const allHex = combinedList.map((x) => materializeExtrinsicHex(registryAt, x, signCtx))
       const calls: [string, HexString[]][] = [
         ['Core_initialize_block', [header.toHex()]],
         ...allHex.map((hex) => ['BlockBuilder_apply_extrinsic', [hex]] as [string, HexString[]]),
