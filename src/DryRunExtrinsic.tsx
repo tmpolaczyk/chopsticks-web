@@ -1,4 +1,4 @@
-import { type Blockchain, setStorage, setup } from '@acala-network/chopsticks-core'
+import { Blockchain, type SetupOptions, processOptions, setStorage } from '@acala-network/chopsticks-core'
 import { runTask, taskHandler } from '@acala-network/chopsticks-core'
 import { IdbDatabase } from '@acala-network/chopsticks-db/browser'
 import type { ApiPromise } from '@polkadot/api'
@@ -7,7 +7,7 @@ import type { IExtrinsicEra, Registry } from '@polkadot/types/types'
 import { assert, isHex } from '@polkadot/util'
 import { decodeAddress, encodeAddress, isEthereumAddress } from '@polkadot/util-crypto'
 import type { HexString } from '@polkadot/util/types'
-import { Alert, Button, Card, Collapse, Divider, Form, Input, Popconfirm, Space, Spin, Tag, Tooltip, Typography } from 'antd'
+import { Alert, Button, Card, Collapse, Divider, Form, Input, Popconfirm, Radio, Space, Spin, Tag, Tooltip, Typography } from 'antd'
 import { nanoid } from 'nanoid'
 import React, { useCallback, useMemo, useState } from 'react'
 import { JSONTree } from 'react-json-tree'
@@ -16,6 +16,41 @@ import { decodeStorageDiff } from './helper'
 
 const ALICE = '5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY'
 const { Panel } = Collapse
+
+const setup2 = async (options: SetupOptions, inherentProviders) => {
+  const { api, blockHash, ...opts } = await processOptions(options)
+
+  const header = await api.getHeader(blockHash)
+  if (!header) {
+    throw new Error(`Cannot find header for ${blockHash}`)
+  }
+
+  const chain = new Blockchain({
+    api,
+    buildBlockMode: opts.buildBlockMode,
+    inherentProviders,
+    db: opts.db,
+    header: {
+      hash: blockHash as HexString,
+      number: Number(header.number),
+    },
+    mockSignatureHost: opts.mockSignatureHost,
+    allowUnresolvedImports: opts.allowUnresolvedImports,
+    runtimeLogLevel: opts.runtimeLogLevel,
+    registeredTypes: opts.registeredTypes || {},
+    offchainWorker: opts.offchainWorker,
+    maxMemoryBlockCount: opts.maxMemoryBlockCount,
+    processQueuedMessages: opts.processQueuedMessages,
+    saveBlocks: opts.saveBlocks,
+  })
+
+  if (opts.genesis) {
+    // build 1st block
+    await chain.newBlock()
+  }
+
+  return chain
+}
 
 export type DryRunExtrinsicProps = {
   api: ApiPromise
@@ -34,11 +69,8 @@ function decodeExtrinsicAt(registry: Registry, hex: string) {
 
 type RawStorageValues = [string, string | null][]
 
-/** Persist the "after" state from Phase A into Chopsticks storage. */
+/** Persist the "after" state from a raw storage diff into Chopsticks storage. */
 async function applyDecodedDiffToState(chain: Blockchain, storageDiff: RawStorageValues): Promise<HexString> {
-  // If you ever want to skip events, uncomment:
-  // if (env.newState.system?.events) env.newState.system.events = []
-
   return await setStorage(chain, storageDiff)
 }
 
@@ -68,6 +100,11 @@ type SignCtx = {
   nonce?: number // default 0
   tip?: number // default 0
 }
+
+type DecodedDiff = Awaited<ReturnType<typeof decodeStorageDiff>>
+
+type StepKind = 'init' | 'block' | 'extra' | 'finalize'
+type StepMeta = { id: string; label: string; kind: StepKind; refItemId?: string }
 
 function ensure0x(hex: string) {
   const h = hex.trim()
@@ -170,7 +207,6 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
   const [form] = Form.useForm()
   const [messageText, setMessageText] = useState<string>()
   const [isLoading, setIsLoading] = useState(false)
-  const [storageDiff, setStorageDiff] = useState<Awaited<ReturnType<typeof decodeStorageDiff>>>()
   const [blockInfo, setBlockInfo] = useState<{ number: number; hash: string } | null>(null)
 
   const [blockRegistry, setBlockRegistry] = useState<Registry | null>(null)
@@ -181,10 +217,26 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
   // Textarea for staging extras
   const [pasteInput, setPasteInput] = useState<string>('')
 
+  // Precomputed diffs per step id, and metadata + selected step
+  const [diffsByStep, setDiffsByStep] = useState<Record<string, DecodedDiff> | null>(null)
+  const [stepsMeta, setStepsMeta] = useState<StepMeta[]>([])
+  const [selectedStepId, setSelectedStepId] = useState<string | null>(null)
+
   const combinedList: UIExtrinsic[] = useMemo(() => {
     // Order: block first (as in the chain), then extras appended
     return [...blockItems, ...stagedExtras]
   }, [blockItems, stagedExtras])
+
+  const blockIndexById = useMemo(() => {
+    const m: Record<string, number> = {}
+    blockItems.forEach((x, i) => (m[x.id] = i))
+    return m
+  }, [blockItems])
+  const extraIndexById = useMemo(() => {
+    const m: Record<string, number> = {}
+    stagedExtras.forEach((x, i) => (m[x.id] = i))
+    return m
+  }, [stagedExtras])
 
   /* --------------------- staging extras (pre-Run and later) --------------------- */
 
@@ -243,164 +295,29 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
     setStagedExtras((prev) => prev.map((x) => (x.id === id ? { ...x, originAddress: address } : x)))
   }, [])
 
-  /* ------------------------------------ Run ----------------------------------- */
+  const norm = (h: string) => h.trim().toLowerCase() // assumes already 0x-prefixed
 
-  const fetchBlockAndAppendExtras = useCallback(
-    async (values: any) => {
-      // Reset UI
-      setIsLoading(true)
-      setMessageText('Initializing…')
-      setStorageDiff(undefined)
-      setBlockInfo(null)
-      setBlockItems([])
-      setBlockRegistry(null)
-
-      // 1) pick block
-      const targetBlock =
-        values.blockNumber === 'latest' ? ((await api.query.system.number()) as any).toNumber() : Number(values.blockNumber)
-
-      // 2) start Chopsticks
-      const chain = await setup({
-        endpoint,
-        block: targetBlock,
-        mockSignatureHost: true,
-        db: new IdbDatabase('cache'),
-        runtimeLogLevel: 5,
-      })
-      setMessageText('Chopsticks ready')
-
-      // 3) header
-      const head = await chain.head.header
-      const blockNumber = head.number.toNumber()
-      const blockHash = head.hash.toHex()
-      setBlockInfo({ number: blockNumber, hash: blockHash })
-
-      const apiAt = await api.at(head.hash)
-      const registryAt = apiAt.registry
-      setBlockRegistry(registryAt)
-
-      // 4) get block extrinsics and map to UI (source=block)
-      const rawExts = await chain.head.extrinsics
-      const blockUI = rawExts.map((ext) => {
-        const hex = typeof ext === 'string' ? ext : ext.toHex()
-        return buildUIExtrinsic(registryAt, hex, 'block', hex)
-      })
-      setBlockItems(blockUI)
-      // 5) do dry run with combined list (block + current staged extras)
-      const signCtx = await makeSignCtxAt(api, blockHash, registryAt)
-
-      const runDryRun = async () => {
-        try {
-          const header = await chain.head.header
-          const parent = await chain.head.parentBlock
-          if (!parent) throw new Error('No parent block')
-
-          if (wasmOverride) {
-            const buf = new Uint8Array(await wasmOverride.arrayBuffer())
-            const wasmHex = `0x${Array.from(buf)
-              .map((b) => b.toString(16).padStart(2, '0'))
-              .join('')}`
-            parent.setWasm(wasmHex as HexString)
-          }
-
-          // Seed ALICE once on base state so both phases see it
-          try {
-            await setStorage(chain, {
-              system: {
-                account: [[[ALICE], { providers: 1, data: { free: '1000000000000' } }]],
-              },
-            })
-          } catch (e) {
-            console.error('Unable to seed Alice balances', e)
-          }
-
-          const blockHexes = blockItems.map((x) => materializeExtrinsicHex(registryAt, x, signCtx))
-          const extraHexes = stagedExtras.map((x) => materializeExtrinsicHex(registryAt, x, signCtx))
-          const wasm = await parent.wasm
-
-          // Phase A — init + block extrinsics (NO finalize)
-          const callsA: [string, HexString[]][] = [
-            ['Core_initialize_block', [header.toHex()]],
-            ...blockHexes.map((hex) => ['BlockBuilder_apply_extrinsic', [hex]] as [string, HexString[]]),
-            // (intentionally NO finalize here)
-          ]
-          console.log('callsA', callsA)
-          const resA = await runTask(
-            { wasm, calls: callsA, mockSignatureHost: true, allowUnresolvedImports: false, runtimeLogLevel: 5 },
-            taskHandler(parent),
-          )
-          if ('Error' in resA) throw new Error(resA.Error)
-          // TODO: we cannot decode the diff because then trying to apply it fails, as toHuman is no reversible it seems
-          //const [oldStateA, newStateA] = await decodeBlockStorageDiff(parent, resA.Call.storageDiff)
-
-          // commit Phase-A effects so Phase B starts from post-block state
-          // Without this the next calls will complain that the block has not been initialized properly, as it will be
-          // missing timestamp inherent for example.
-          //const newBlockHashMaybe = await applyDecodedDiffToState(chain, resA.Call.storageDiff)
-          //console.log("parent hash: ", parent.hash)
-          //console.log("new hash maybe: ", newBlockHashMaybe)
-
-          chain.head.pushStorageLayer().setAll(resA.Call.storageDiff)
-
-          // Phase B — ONLY extras + finalize
-          const callsB: [string, HexString[]][] = [
-            ...extraHexes.map((hex) => ['BlockBuilder_apply_extrinsic', [hex]] as [string, HexString[]]),
-            ['BlockBuilder_finalize_block', []],
-          ]
-          console.log('callsB', callsB)
-          const resB = await runTask(
-            { wasm, calls: callsB, mockSignatureHost: true, allowUnresolvedImports: false, runtimeLogLevel: 5 },
-            taskHandler(parent),
-          )
-          if ('Error' in resB) throw new Error(resB.Error)
-
-          const extrasOnly = await decodeStorageDiff(parent, resB.Call.storageDiff)
-          return extrasOnly
-        } catch (e: any) {
-          console.error(e)
-          return undefined
-        }
+  /** Mutable: removes ALL entries matching `key` from `diff` (in place). Returns count removed. */
+  function dropStorageKeyInPlace(diff: [HexString, HexString | null][], key: HexString): number {
+    const needle = norm(key)
+    let removed = 0
+    for (let i = diff.length - 1; i >= 0; i--) {
+      if (norm(diff[i][0]) === needle) {
+        diff.splice(i, 1)
+        removed++
       }
+    }
+    return removed
+  }
+  /* ------------------------ step-by-step diff collection ----------------------- */
 
-      setMessageText('Running dry-run…')
-      const diff = await runDryRun()
-      if (diff) {
-        setStorageDiff(diff)
-        setMessageText('')
-      } else {
-        setMessageText('Dry-run failed')
-      }
-
-      setIsLoading(false)
-    },
-    [api, endpoint, stagedExtras, wasmOverride, blockItems],
-  )
-
-  // Run-without-refetch button (keeps current edits/removals)
-  const dryRunCurrentList = useCallback(async () => {
-    throw new Error('unimplemented')
-    if (!blockInfo) return
-    setIsLoading(true)
-    setMessageText('Running dry-run (current list)…')
-    setStorageDiff(undefined)
-
-    const chain = await setup({
-      endpoint,
-      block: blockInfo.number,
-      mockSignatureHost: true,
-      db: new IdbDatabase('cache'),
-      runtimeLogLevel: 5,
-    })
-
-    try {
+  const collectPerStepDiffs = useCallback(
+    async (chain: Blockchain, registryAt: Registry, blockUI: UIExtrinsic[], extrasUI: UIExtrinsic[]) => {
       const header = await chain.head.header
       const parent = await chain.head.parentBlock
       if (!parent) throw new Error('No parent block')
 
-      const apiAt = await api.at(header.hash)
-      const registryAt = apiAt.registry
-      const signCtx = await makeSignCtxAt(api, header.hash.toHex() as HexString, registryAt)
-
+      // Optional WASM override
       if (wasmOverride) {
         const buf = new Uint8Array(await wasmOverride.arrayBuffer())
         const wasmHex = `0x${Array.from(buf)
@@ -409,32 +326,198 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
         parent.setWasm(wasmHex as HexString)
       }
 
-      const wasm = await parent.wasm
-      const allHex = combinedList.map((x) => materializeExtrinsicHex(registryAt, x, signCtx))
-      const calls: [string, HexString[]][] = [
-        ['Core_initialize_block', [header.toHex()]],
-        ...allHex.map((hex) => ['BlockBuilder_apply_extrinsic', [hex]] as [string, HexString[]]),
-        ['BlockBuilder_finalize_block', []],
-      ]
+      // Seed ALICE once (providers & big balance) so both block/extras can be signed
+      try {
+        await setStorage(chain, {
+          system: {
+            account: [[[ALICE], { providers: 1, data: { free: '1000000000000' } }]],
+          },
+        })
+      } catch (e) {
+        console.error('Unable to seed Alice balances', e)
+      }
 
-      const result = await runTask(
-        { wasm, calls, mockSignatureHost: true, allowUnresolvedImports: false, runtimeLogLevel: 5 },
-        taskHandler(parent),
+      const signCtx = await makeSignCtxAt(api, header.hash.toHex() as HexString, registryAt)
+      const wasm = await parent.wasm
+
+      // Build steps: init → block extrinsics → extra extrinsics → finalize
+      const blockHexes = blockUI.map((x) => materializeExtrinsicHex(registryAt, x, signCtx))
+      const extraHexes = extrasUI.map((x) => materializeExtrinsicHex(registryAt, x, signCtx))
+
+      const steps: { id: string; label: string; kind: StepKind; call: [string, HexString[]]; refItemId?: string }[] = []
+
+      steps.push({
+        id: 'init',
+        label: 'initialize_block',
+        kind: 'init',
+        call: ['Core_initialize_block', [header.toHex()]],
+      })
+
+      blockHexes.forEach((hex, i) => {
+        const ui = blockUI[i]
+        steps.push({
+          id: `block-${i}`,
+          label: `block #${i}${ui?.methodName ? ` — ${ui.methodName}` : ''}`,
+          kind: 'block',
+          call: ['BlockBuilder_apply_extrinsic', [hex]],
+          refItemId: ui?.id,
+        })
+      })
+
+      extraHexes.forEach((hex, i) => {
+        const ui = extrasUI[i]
+        steps.push({
+          id: `extra-${i}`,
+          label: `extra #${i}${ui?.methodName ? ` — ${ui.methodName}` : ''}`,
+          kind: 'extra',
+          call: ['BlockBuilder_apply_extrinsic', [hex]],
+          refItemId: ui?.id,
+        })
+      })
+
+      steps.push({
+        id: 'finalize',
+        label: 'finalize_block',
+        kind: 'finalize',
+        call: ['BlockBuilder_finalize_block', []],
+      })
+
+      // To get a per-call storage diff, we call progressively more calls
+      const prefix: [string, HexString[]][] = []
+      const diffs: Record<string, DecodedDiff> = {}
+      for (const s of steps) {
+        prefix.push(s.call)
+        const res = await runTask(
+          { wasm, calls: [...prefix], mockSignatureHost: true, allowUnresolvedImports: false, runtimeLogLevel: 5 },
+          taskHandler(parent),
+        )
+        if ('Error' in res) throw new Error(res.Error)
+
+        // decode for UI display
+        const decoded = await decodeStorageDiff(parent, res.Call.storageDiff)
+        diffs[s.id] = decoded
+      }
+
+      return { diffs, stepsMeta: steps.map(({ id, label, kind, refItemId }) => ({ id, label, kind, refItemId })) }
+    },
+    [api, wasmOverride],
+  )
+
+  /* ------------------------------------ Run ----------------------------------- */
+
+  const fetchBlockAndAppendExtras = useCallback(
+    async (values: any) => {
+      // Reset UI
+      setIsLoading(true)
+      setMessageText('Initializing…')
+      setDiffsByStep(null)
+      setStepsMeta([])
+      setSelectedStepId(null)
+      setBlockInfo(null)
+      setBlockItems([])
+      setBlockRegistry(null)
+
+      try {
+        // 1) pick block
+        const targetBlock =
+          values.blockNumber === 'latest' ? ((await api.query.system.number()) as any).toNumber() : Number(values.blockNumber)
+
+        // 2) start Chopsticks
+        const chain = await setup2(
+          {
+            endpoint,
+            block: targetBlock,
+            mockSignatureHost: true,
+            db: new IdbDatabase('cache'),
+            runtimeLogLevel: 5,
+          },
+          [],
+        )
+        setMessageText('Chopsticks ready')
+
+        // 3) header
+        const head = await chain.head.header
+        const blockNumber = head.number.toNumber()
+        const blockHash = head.hash.toHex()
+        setBlockInfo({ number: blockNumber, hash: blockHash })
+
+        const apiAt = await api.at(head.hash)
+        const registryAt = apiAt.registry
+        setBlockRegistry(registryAt)
+
+        // 4) get block extrinsics (source=block) — keep local copy for this run
+        const rawExts = await chain.head.extrinsics
+        const blockUI = rawExts.map((ext) => {
+          const hex = typeof ext === 'string' ? ext : ext.toHex()
+          return buildUIExtrinsic(registryAt, hex, 'block', hex)
+        })
+        setBlockItems(blockUI)
+
+        // 5) step-by-step simulation (block + current staged extras)
+        setMessageText('Running dry-run (per step)…')
+        const { diffs, stepsMeta } = await collectPerStepDiffs(chain, registryAt, blockUI, stagedExtras)
+
+        setDiffsByStep(diffs)
+        setStepsMeta(stepsMeta)
+        // default to finalize if present; otherwise init
+        setSelectedStepId(diffs['finalize'] ? 'finalize' : 'init')
+        setMessageText('')
+      } catch (e: any) {
+        console.error(e)
+        setMessageText(e?.message ?? 'Dry-run failed')
+      } finally {
+        setIsLoading(false)
+      }
+    },
+    [api, endpoint, stagedExtras, collectPerStepDiffs],
+  )
+
+  // Re-run with current edited list (no refetch)
+  const dryRunCurrentList = useCallback(async () => {
+    if (!blockInfo) return
+    setIsLoading(true)
+    setMessageText('Running dry-run (current list, per step)…')
+    setDiffsByStep(null)
+    setStepsMeta([])
+    setSelectedStepId(null)
+
+    try {
+      const chain = await setup2(
+        {
+          endpoint,
+          block: blockInfo.number,
+          mockSignatureHost: true,
+          db: new IdbDatabase('cache'),
+          runtimeLogLevel: 5,
+        },
+        [],
       )
 
-      if ('Error' in result) throw new Error(result.Error)
-      const diff = await decodeStorageDiff(parent, result.Call.storageDiff)
-      setStorageDiff(diff)
+      const header = await chain.head.header
+      const apiAt = await api.at(header.hash)
+      const registryAt = apiAt.registry
+
+      const { diffs, stepsMeta } = await collectPerStepDiffs(chain, registryAt, blockItems, stagedExtras)
+
+      setDiffsByStep(diffs)
+      setStepsMeta(stepsMeta)
+      setSelectedStepId(diffs['finalize'] ? 'finalize' : 'init')
       setMessageText('')
     } catch (e: any) {
       console.error(e)
-      setMessageText('Dry-run failed')
+      setMessageText(e?.message ?? 'Dry-run failed')
     } finally {
       setIsLoading(false)
     }
-  }, [api, blockInfo, endpoint, wasmOverride, combinedList])
+  }, [api, blockInfo, endpoint, blockItems, stagedExtras, collectPerStepDiffs])
 
   /* --------------------------------- render --------------------------------- */
+
+  const selectedLabel = useMemo(() => {
+    if (!selectedStepId) return ''
+    const meta = stepsMeta.find((s) => s.id === selectedStepId)
+    return meta ? meta.label : selectedStepId
+  }, [selectedStepId, stepsMeta])
 
   return (
     <div>
@@ -500,21 +583,69 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
 
       <Divider />
 
+      {/* ---------------------- Radios for init/finalize steps --------------------- */}
+      <Card size="small" title="Block lifecycle">
+        <Space direction="vertical">
+          <Space>
+            <Radio
+              checked={selectedStepId === 'init'}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => {
+                e.stopPropagation()
+                setSelectedStepId('init')
+              }}
+              disabled={!diffsByStep}
+            >
+              initialize_block
+            </Radio>
+            <Radio
+              checked={selectedStepId === 'finalize'}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => {
+                e.stopPropagation()
+                setSelectedStepId('finalize')
+              }}
+              disabled={!diffsByStep}
+            >
+              finalize_block
+            </Radio>
+          </Space>
+          <Typography.Text type="secondary">
+            Viewing diff for: <Typography.Text strong>{selectedLabel || '—'}</Typography.Text>
+          </Typography.Text>
+        </Space>
+      </Card>
+
+      <Divider />
+
       {/* -------------------------- Editable decoded list -------------------------- */}
       <Card size="small" title="Extrinsics (block + extras)">
         <div style={{ maxHeight: 460, overflow: 'auto' }}>
           <Collapse accordion bordered={false} expandIconPosition="right">
             {combinedList.map((item, idx) => {
-              const headerLeft = `${idx}: ${item.methodName ?? (item.error ? 'Decode error' : 'Unknown method')}`
               const isExtra = item.source === 'extra'
+              const perKindIndex = isExtra ? extraIndexById[item.id] : blockIndexById[item.id]
+              const stepId = isExtra ? `extra-${perKindIndex}` : `block-${perKindIndex}`
+
+              const headerLeft = `${idx}: ${item.methodName ?? (item.error ? 'Decode error' : 'Unknown method')}`
               const header = (
                 <Space>
+                  <Radio
+                    checked={selectedStepId === stepId}
+                    disabled={!diffsByStep}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={(e) => {
+                      e.stopPropagation()
+                      setSelectedStepId(stepId)
+                    }}
+                  />
                   <span>{headerLeft}</span>
                   {isExtra ? <Tag color="green">extra</Tag> : <Tag color="blue">block</Tag>}
                   {item.edited && <Tag color="gold">edited</Tag>}
                   {item.error && <Tag color="red">error</Tag>}
                 </Space>
               )
+
               return (
                 <Panel
                   key={item.id}
@@ -608,7 +739,7 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
 
       <Divider />
 
-      {storageDiff && <DiffViewer {...storageDiff} />}
+      {diffsByStep && selectedStepId && diffsByStep[selectedStepId] && <DiffViewer {...diffsByStep[selectedStepId]} />}
     </div>
   )
 }
