@@ -1,4 +1,4 @@
-import { Blockchain, type SetupOptions, processOptions, setStorage } from '@acala-network/chopsticks-core'
+import { Blockchain, SetupOptions, processOptions, setStorage, setup } from '@acala-network/chopsticks-core'
 import { runTask, taskHandler } from '@acala-network/chopsticks-core'
 import { IdbDatabase } from '@acala-network/chopsticks-db/browser'
 import type { ApiPromise } from '@polkadot/api'
@@ -59,6 +59,11 @@ export type DryRunExtrinsicProps = {
 }
 
 /* ----------------------------- decode helpers ----------------------------- */
+function ensure0x(hex: string) {
+  const h = hex.trim()
+  return h.startsWith('0x') ? h : `0x${h}`
+}
+
 function decodeExtrinsicAt(registry: Registry, hex: string) {
   assert(isHex(hex), 'Expected a hex-encoded extrinsic')
   const ex: any = registry.createType('Extrinsic', ensure0x(hex))
@@ -105,11 +110,6 @@ type DecodedDiff = Awaited<ReturnType<typeof decodeStorageDiff>>
 
 type StepKind = 'init' | 'block' | 'extra' | 'finalize'
 type StepMeta = { id: string; label: string; kind: StepKind; refItemId?: string }
-
-function ensure0x(hex: string) {
-  const h = hex.trim()
-  return h.startsWith('0x') ? h : `0x${h}`
-}
 
 function isValidSs58(addr?: string) {
   if (!addr) return false
@@ -201,6 +201,50 @@ function materializeExtrinsicHex(registry: Registry, item: UIExtrinsic, ctx?: Si
   return (rebuilt as any).toHex() as HexString
 }
 
+/* --------------------------------- utils --------------------------------- */
+
+const norm = (h: string) => h.trim().toLowerCase() // assumes already 0x-prefixed
+
+/** Mutable: removes ALL entries matching `key` from `diff` (in place). Returns count removed. */
+function dropStorageKeyInPlace(
+  diff: [HexString, HexString | null][],
+  key: HexString,
+): number {
+  const needle = norm(key)
+  let removed = 0
+  for (let i = diff.length - 1; i >= 0; i--) {
+    if (norm(diff[i][0]) === needle) {
+      diff.splice(i, 1)
+      removed++
+    }
+  }
+  return removed
+}
+
+/** Produce raw per-step diff vs previous step's cumulative diff. */
+function computeDeltaRaw(prev: RawStorageValues, curr: RawStorageValues): RawStorageValues {
+  const toMap = (arr: RawStorageValues) => {
+    const m: Record<string, string | null> = {}
+    for (const [k, v] of arr) m[norm(k)] = v
+    return m
+  }
+  const p = toMap(prev)
+  const c = toMap(curr)
+  const keys = new Set([...Object.keys(p), ...Object.keys(c)])
+  const out: RawStorageValues = []
+  for (const k of keys) {
+    const pv = p[k]
+    const cv = c[k]
+    if (cv === undefined) {
+      // Key disappeared from cumulative diff -> reverted to base. Show as deletion in relative view.
+      out.push([k as HexString, null])
+    } else if (pv === undefined || pv !== cv) {
+      out.push([k as HexString, cv as HexString | null])
+    }
+  }
+  return out
+}
+
 /* --------------------------------- component -------------------------------- */
 
 const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOverride }) => {
@@ -232,11 +276,27 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
     blockItems.forEach((x, i) => (m[x.id] = i))
     return m
   }, [blockItems])
+
   const extraIndexById = useMemo(() => {
     const m: Record<string, number> = {}
     stagedExtras.forEach((x, i) => (m[x.id] = i))
     return m
   }, [stagedExtras])
+
+  const methodNameById = useMemo(() => {
+    const m: Record<string, string | undefined> = {}
+    ;[...blockItems, ...stagedExtras].forEach((x) => (m[x.id] = x.methodName))
+    return m
+  }, [blockItems, stagedExtras])
+
+  const extrNumberByStepId = useMemo(() => {
+    const m: Record<string, number> = {}
+    let n = 1
+    stepsMeta.forEach((s) => {
+      if (s.kind === 'block' || s.kind === 'extra') m[s.id] = n++
+    })
+    return m
+  }, [stepsMeta])
 
   /* --------------------- staging extras (pre-Run and later) --------------------- */
 
@@ -295,20 +355,6 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
     setStagedExtras((prev) => prev.map((x) => (x.id === id ? { ...x, originAddress: address } : x)))
   }, [])
 
-  const norm = (h: string) => h.trim().toLowerCase() // assumes already 0x-prefixed
-
-  /** Mutable: removes ALL entries matching `key` from `diff` (in place). Returns count removed. */
-  function dropStorageKeyInPlace(diff: [HexString, HexString | null][], key: HexString): number {
-    const needle = norm(key)
-    let removed = 0
-    for (let i = diff.length - 1; i >= 0; i--) {
-      if (norm(diff[i][0]) === needle) {
-        diff.splice(i, 1)
-        removed++
-      }
-    }
-    return removed
-  }
   /* ------------------------ step-by-step diff collection ----------------------- */
 
   const collectPerStepDiffs = useCallback(
@@ -382,9 +428,9 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
         call: ['BlockBuilder_finalize_block', []],
       })
 
-      // To get a per-call storage diff, we call progressively more calls
+      // Run progressively longer prefixes, capture *cumulative* raw diffs
       const prefix: [string, HexString[]][] = []
-      const diffs: Record<string, DecodedDiff> = {}
+      const rawByStep: Record<string, RawStorageValues> = {}
       for (const s of steps) {
         prefix.push(s.call)
         const res = await runTask(
@@ -392,10 +438,17 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
           taskHandler(parent),
         )
         if ('Error' in res) throw new Error(res.Error)
+        rawByStep[s.id] = (res.Call.storageDiff ?? []) as RawStorageValues
+      }
 
-        // decode for UI display
-        const decoded = await decodeStorageDiff(parent, res.Call.storageDiff)
-        diffs[s.id] = decoded
+      // Decode *relative* per-step diffs (current cumulative vs previous cumulative)
+      const diffs: Record<string, DecodedDiff> = {}
+      let prev: RawStorageValues | null = null
+      for (const s of steps) {
+        const curr = rawByStep[s.id] || []
+        const delta = prev ? computeDeltaRaw(prev, curr) : curr
+        diffs[s.id] = await decodeStorageDiff(parent, delta)
+        prev = curr
       }
 
       return { diffs, stepsMeta: steps.map(({ id, label, kind, refItemId }) => ({ id, label, kind, refItemId })) }
@@ -516,8 +569,13 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
   const selectedLabel = useMemo(() => {
     if (!selectedStepId) return ''
     const meta = stepsMeta.find((s) => s.id === selectedStepId)
-    return meta ? meta.label : selectedStepId
-  }, [selectedStepId, stepsMeta])
+    if (!meta) return selectedStepId
+    if (meta.kind === 'init') return '* initialize_block'
+    if (meta.kind === 'finalize') return '* finalize_block'
+    const n = extrNumberByStepId[meta.id]
+    const name = meta.refItemId ? methodNameById[meta.refItemId] : undefined
+    return `* extr${n}${name ? ` — ${name}` : ''}`
+  }, [selectedStepId, stepsMeta, extrNumberByStepId, methodNameById])
 
   return (
     <div>
@@ -583,33 +641,29 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
 
       <Divider />
 
-      {/* ---------------------- Radios for init/finalize steps --------------------- */}
-      <Card size="small" title="Block lifecycle">
+      {/* ------------------ Step selector (single block, ordered) ------------------ */}
+      <Card size="small" title="Steps (select to view diff)">
         <Space direction="vertical">
-          <Space>
-            <Radio
-              checked={selectedStepId === 'init'}
-              onClick={(e) => e.stopPropagation()}
-              onChange={(e) => {
-                e.stopPropagation()
-                setSelectedStepId('init')
-              }}
-              disabled={!diffsByStep}
-            >
-              initialize_block
-            </Radio>
-            <Radio
-              checked={selectedStepId === 'finalize'}
-              onClick={(e) => e.stopPropagation()}
-              onChange={(e) => {
-                e.stopPropagation()
-                setSelectedStepId('finalize')
-              }}
-              disabled={!diffsByStep}
-            >
-              finalize_block
-            </Radio>
-          </Space>
+          {stepsMeta.map((s) => {
+            let label: React.ReactNode
+            if (s.kind === 'init') label = '* initialize_block'
+            else if (s.kind === 'finalize') label = '* finalize_block'
+            else {
+              const n = extrNumberByStepId[s.id]
+              const name = s.refItemId ? methodNameById[s.refItemId] : undefined
+              label = `* extr${n}${name ? ` — ${name}` : ''}`
+            }
+            return (
+              <Radio
+                key={s.id}
+                checked={selectedStepId === s.id}
+                disabled={!diffsByStep}
+                onChange={() => setSelectedStepId(s.id)}
+              >
+                {label}
+              </Radio>
+            )
+          })}
           <Typography.Text type="secondary">
             Viewing diff for: <Typography.Text strong>{selectedLabel || '—'}</Typography.Text>
           </Typography.Text>
@@ -630,15 +684,6 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
               const headerLeft = `${idx}: ${item.methodName ?? (item.error ? 'Decode error' : 'Unknown method')}`
               const header = (
                 <Space>
-                  <Radio
-                    checked={selectedStepId === stepId}
-                    disabled={!diffsByStep}
-                    onClick={(e) => e.stopPropagation()}
-                    onChange={(e) => {
-                      e.stopPropagation()
-                      setSelectedStepId(stepId)
-                    }}
-                  />
                   <span>{headerLeft}</span>
                   {isExtra ? <Tag color="green">extra</Tag> : <Tag color="blue">block</Tag>}
                   {item.edited && <Tag color="gold">edited</Tag>}
