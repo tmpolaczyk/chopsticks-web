@@ -209,9 +209,20 @@ const DiffViewer: React.FC<DiffViewerProps> = ({ oldState, delta, newState }) =>
       }
 
       function renderDelta(value: any) {
-        if (/^\d+(,\d+)*$/.test(value[0]) && /^\d+(,\d+)*$/.test(value[1])) {
-          const oldValue = BigInt(value[0].replace(/,/g, ''))
-          const newValue = BigInt(value[1].replace(/,/g, ''))
+        const looksLikeANumber = (x: any) => /^\d+(,\d+)*$/.test(x)
+        if (looksLikeANumber(value[0]) && looksLikeANumber(value[1])) {
+          const toBigInt = (x: any) => {
+            let oldValue: bigint
+            if (x.replace) {
+              oldValue = BigInt(x.replace(/,/g, ''))
+            } else {
+              // assume typeof x === "number"
+              oldValue = BigInt(x)
+            }
+            return oldValue
+          }
+          const oldValue = toBigInt(value[0])
+          const newValue = toBigInt(value[1])
           if (oldValue > 0 && newValue > 0) {
             const delta = newValue - oldValue
             return (

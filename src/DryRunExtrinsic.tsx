@@ -1,4 +1,4 @@
-import { Blockchain, SetupOptions, processOptions, setStorage, setup } from '@acala-network/chopsticks-core'
+import { Blockchain, type SetupOptions, processOptions, setStorage } from '@acala-network/chopsticks-core'
 import { runTask, taskHandler } from '@acala-network/chopsticks-core'
 import { IdbDatabase } from '@acala-network/chopsticks-db/browser'
 import type { ApiPromise } from '@polkadot/api'
@@ -12,7 +12,7 @@ import { nanoid } from 'nanoid'
 import React, { useCallback, useMemo, useState } from 'react'
 import { JSONTree } from 'react-json-tree'
 import DiffViewer from './DiffViewer'
-import { decodeStorageDiff } from './helper'
+import { decodeStorageDiff, decodeStorageDiffWithOverlay } from './helper'
 
 const ALICE = '5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY'
 const { Panel } = Collapse
@@ -199,50 +199,6 @@ function materializeExtrinsicHex(registry: Registry, item: UIExtrinsic, ctx?: Si
   })
 
   return (rebuilt as any).toHex() as HexString
-}
-
-/* --------------------------------- utils --------------------------------- */
-
-const norm = (h: string) => h.trim().toLowerCase() // assumes already 0x-prefixed
-
-/** Mutable: removes ALL entries matching `key` from `diff` (in place). Returns count removed. */
-function dropStorageKeyInPlace(
-  diff: [HexString, HexString | null][],
-  key: HexString,
-): number {
-  const needle = norm(key)
-  let removed = 0
-  for (let i = diff.length - 1; i >= 0; i--) {
-    if (norm(diff[i][0]) === needle) {
-      diff.splice(i, 1)
-      removed++
-    }
-  }
-  return removed
-}
-
-/** Produce raw per-step diff vs previous step's cumulative diff. */
-function computeDeltaRaw(prev: RawStorageValues, curr: RawStorageValues): RawStorageValues {
-  const toMap = (arr: RawStorageValues) => {
-    const m: Record<string, string | null> = {}
-    for (const [k, v] of arr) m[norm(k)] = v
-    return m
-  }
-  const p = toMap(prev)
-  const c = toMap(curr)
-  const keys = new Set([...Object.keys(p), ...Object.keys(c)])
-  const out: RawStorageValues = []
-  for (const k of keys) {
-    const pv = p[k]
-    const cv = c[k]
-    if (cv === undefined) {
-      // Key disappeared from cumulative diff -> reverted to base. Show as deletion in relative view.
-      out.push([k as HexString, null])
-    } else if (pv === undefined || pv !== cv) {
-      out.push([k as HexString, cv as HexString | null])
-    }
-  }
-  return out
 }
 
 /* --------------------------------- component -------------------------------- */
@@ -446,8 +402,12 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
       let prev: RawStorageValues | null = null
       for (const s of steps) {
         const curr = rawByStep[s.id] || []
-        const delta = prev ? computeDeltaRaw(prev, curr) : curr
-        diffs[s.id] = await decodeStorageDiff(parent, delta)
+        if (prev) {
+          diffs[s.id] = await decodeStorageDiffWithOverlay(parent, prev, curr)
+        } else {
+          diffs[s.id] = await decodeStorageDiff(parent, curr)
+        }
+        console.log('diff for step', s.id, diffs[s.id])
         prev = curr
       }
 
@@ -654,12 +614,7 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
               label = `* extr${n}${name ? ` — ${name}` : ''}`
             }
             return (
-              <Radio
-                key={s.id}
-                checked={selectedStepId === s.id}
-                disabled={!diffsByStep}
-                onChange={() => setSelectedStepId(s.id)}
-              >
+              <Radio key={s.id} checked={selectedStepId === s.id} disabled={!diffsByStep} onChange={() => setSelectedStepId(s.id)}>
                 {label}
               </Radio>
             )
