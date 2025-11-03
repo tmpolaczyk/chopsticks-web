@@ -162,17 +162,17 @@ function App() {
     {
       key: 'snowbridge-inbound-submit',
       label: 'Snowbridge inbound messages (from ethereum)',
-      children: api ? <SnowbridgeInboundSubmit api={api} /> : <Spin spinning={true} />,
+      children: api?.query.ethereumInboundQueue ? <SnowbridgeInboundSubmit api={api} /> : <Spin spinning={true} />,
     },
     {
       key: 'test-validator-queries',
       label: 'Test Validator Queries',
-      children: api ? <ValidatorQueries api={api} /> : <Spin spinning={true} />,
+      children: api?.query.externalValidators ? <ValidatorQueries api={api} /> : <Spin spinning={true} />,
     },
     {
       key: 'test-collator-queries',
       label: 'Test Collator Queries',
-      children: api ? <CollatorQueries api={api} /> : <Spin spinning={true} />,
+      children: api?.query.tanssiCollatorAssignment ? <CollatorQueries api={api} /> : <Spin spinning={true} />,
     },
     {
       key: 'test-metadata',
