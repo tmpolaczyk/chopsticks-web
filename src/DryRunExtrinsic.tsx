@@ -229,28 +229,36 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
 
   const blockIndexById = useMemo(() => {
     const m: Record<string, number> = {}
-    blockItems.forEach((x, i) => (m[x.id] = i))
+    for (const [i, x] of blockItems.entries()) {
+      m[x.id] = i
+    }
     return m
   }, [blockItems])
 
   const extraIndexById = useMemo(() => {
     const m: Record<string, number> = {}
-    stagedExtras.forEach((x, i) => (m[x.id] = i))
+    for (const [i, x] of stagedExtras.entries()) {
+      m[x.id] = i
+    }
     return m
   }, [stagedExtras])
 
   const methodNameById = useMemo(() => {
     const m: Record<string, string | undefined> = {}
-    ;[...blockItems, ...stagedExtras].forEach((x) => (m[x.id] = x.methodName))
+    for (const x of [...blockItems, ...stagedExtras]) {
+      m[x.id] = x.methodName
+    }
     return m
   }, [blockItems, stagedExtras])
 
   const extrNumberByStepId = useMemo(() => {
     const m: Record<string, number> = {}
     let n = 1
-    stepsMeta.forEach((s) => {
-      if (s.kind === 'block' || s.kind === 'extra') m[s.id] = n++
-    })
+    for (const s of stepsMeta) {
+      if (s.kind === 'block' || s.kind === 'extra') {
+        m[s.id] = n++
+      }
+    }
     return m
   }, [stepsMeta])
 
@@ -473,7 +481,7 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
         setDiffsByStep(diffs)
         setStepsMeta(stepsMeta)
         // default to finalize if present; otherwise init
-        setSelectedStepId(diffs['finalize'] ? 'finalize' : 'init')
+        setSelectedStepId(diffs.finalize ? 'finalize' : 'init')
         setMessageText('')
       } catch (e: any) {
         console.error(e)
@@ -514,7 +522,7 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
 
       setDiffsByStep(diffs)
       setStepsMeta(stepsMeta)
-      setSelectedStepId(diffs['finalize'] ? 'finalize' : 'init')
+      setSelectedStepId(diffs.finalize ? 'finalize' : 'init')
       setMessageText('')
     } catch (e: any) {
       console.error(e)
