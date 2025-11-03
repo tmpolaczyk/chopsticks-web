@@ -27,11 +27,20 @@ export const decodeStorageDiffWithOverlay = async (
   newDiff: [string, string | null][],
 ) => {
   const [oldState, newState] = await decodeBlockStorageDiffWithOverlay(block, oldDiff, newDiff)
-  const oldStateWithoutEvents = _.cloneDeep(oldState) as any
-  if (oldStateWithoutEvents.system?.events) {
-    oldStateWithoutEvents.system.events = []
+  // We only want to reset events if they haven't changed in between.
+  // So the old events must never be the events from the previous block.
+  // encoded key for system.events:
+  // 0x26aa394eea5630e07c48ae0c9558cef780d41e5e16056765bc8461851072c9d7
+  if (-1 === oldDiff.findIndex(([key, _val]) => key === '0x26aa394eea5630e07c48ae0c9558cef780d41e5e16056765bc8461851072c9d7')) {
+    // Events did not change since last block. Reset events in diff
+    const oldStateWithoutEvents = _.cloneDeep(oldState) as any
+    if (oldStateWithoutEvents.system?.events) {
+      oldStateWithoutEvents.system.events = []
+    }
+    return { oldState, newState, delta: diffPatcher.diff(oldStateWithoutEvents, newState) }
   }
-  return { oldState, newState, delta: diffPatcher.diff(oldStateWithoutEvents, newState) }
+  // Events did change since last block, so see the new events from this extrinsic in diff
+  return { oldState, newState, delta: diffPatcher.diff(oldState, newState) }
 }
 
 /**
@@ -90,7 +99,8 @@ export const decodeBlockStorageDiffWithOverlay = async (
 
   for (const [key, newVal] of newDiff) {
     const oldVal = oldMap.has(key) ? oldMap.get(key)! : await block.get(key)
-    if (oldVal === newVal) continue // unchanged in this step
+    // TODO: this is not needed, and keeping equal keys allows them to show in "unchanged" view
+    //if (oldVal === newVal) continue // unchanged in this step
     oldEntries.push([key, oldVal ?? null])
     newEntries.push([key, newVal ?? null])
   }

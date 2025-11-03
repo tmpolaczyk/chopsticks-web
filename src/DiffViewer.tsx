@@ -2,11 +2,17 @@ import _ from 'lodash'
 import React, { useCallback, useMemo, useState } from 'react'
 import { JSONTree } from 'react-json-tree'
 import styled from 'styled-components'
+import { spanButtonImage } from './images'
 
 export type DiffViewerProps = {
   oldState: any
   delta: any
   newState: any
+  // If true, events will look at oldState and calculate diff.
+  // Set this when the oldState and newState are from the same block.
+  // Because the normal operation is to have oldState be the previous block, so you will see the events from the previous block,
+  // which just add noise.
+  eventsUseDelta?: boolean
 }
 
 const expandFirstLevel = (_keyName: any, _data: any, level: number) => level <= 1
@@ -147,7 +153,47 @@ enum ViewMode {
   Unchanged = 'unchanged',
 }
 
-const DiffViewer: React.FC<DiffViewerProps> = ({ oldState, delta, newState }) => {
+// Make an event look like the non-delta view
+function prettyEvent(raw: any) {
+  if (!raw || typeof raw !== 'object') return raw
+  const phase = typeof raw.phase === 'string' ? raw.phase : JSON.stringify(raw.phase)
+  const ev = raw.event ?? {}
+  const section = ev.section ?? raw.section
+  const method = ev.method ?? raw.method
+  const data = ev.data ?? raw.data
+  if (!section || !method) return raw
+  return { phase, kind: `${section}.${method}`, data }
+}
+
+// For jsondiffpatch array deltas (_t: 'a'), map the payloads in-place.
+// Works for add, remove, and update pairs (key / _key).
+function mapArrayDeltaInPlace(a: any, fn: (x: any) => any) {
+  if (!a || a._t !== 'a') return a
+  for (const k in a) {
+    if (k === '_t') continue
+    const v = a[k]
+    if (Array.isArray(v) && v.length) v[0] = fn(v[0])
+    const underscore = `_${k}`
+    const u = a[underscore]
+    if (Array.isArray(u) && u.length) u[0] = fn(u[0])
+  }
+  return a
+}
+
+// Return true is a is either of
+// [null, []]
+// [[], null]
+// this is a hack to avoid showing empty UpwardMessages, happens in onInitialize and onFinalize in DryRunExtrinsic
+function deltaEmpty(a: any) {
+  const emptyish = (v: unknown) => v === null || (Array.isArray(v) && v.length === 0)
+  return Array.isArray(a) && a.length === 2 && emptyish(a[0]) && emptyish(a[1])
+}
+
+function deltaNotEmpty(a: any) {
+  return !deltaEmpty(a)
+}
+
+const DiffViewer: React.FC<DiffViewerProps> = ({ oldState, delta, newState, eventsUseDelta = false }) => {
   const [viewMode, setViewMode] = useState<ViewMode>(ViewMode.Events)
   const [partial, setPartial] = useState(null)
 
@@ -162,6 +208,31 @@ const DiffViewer: React.FC<DiffViewerProps> = ({ oldState, delta, newState }) =>
       case ViewMode.Changed:
         return delta
       case ViewMode.Events: {
+        if (eventsUseDelta) {
+          // TODO: this way makes events look a bit ugly because they are encoded as a string, not an object, so
+          // you see phase:
+          // { "phase": "{\"ApplyExtrinsic\":\"4\"}",
+          // Maybe a better solution would be to use the regular, non-diff viewer, but manually remove the events based on oldData
+          const sys = _.get(delta, 'system.events')
+          const up = _.get(delta, 'parachainSystem.upwardMessages')
+          const dn = _.get(delta, 'dmp.downwardMessageQueues')
+          const hr = _.get(delta, 'parachainSystem.hrmpOutboundMessages')
+
+          const eventOnlyDelta: any = {}
+
+          if (sys) {
+            const sysCloned = _.cloneDeep(sys) // don’t mutate the original delta
+            mapArrayDeltaInPlace(sysCloned, prettyEvent) // shape entries to {phase, kind, data}
+            eventOnlyDelta.SystemEvents = sysCloned
+          }
+          if (up && deltaNotEmpty(up)) eventOnlyDelta.UpwardMessages = up
+          if (dn && deltaNotEmpty(dn)) eventOnlyDelta.DownwardMessages = dn
+          if (hr && deltaNotEmpty(hr)) eventOnlyDelta.HorizontalMessages = hr
+
+          return eventOnlyDelta
+        }
+
+        // unchanged non-delta Events view
         const events = _.get(newState, 'system.events')?.map((e: any) => ({
           phase: typeof e.phase === 'string' ? e.phase : JSON.stringify(e.phase),
           kind: `${e.event.section}.${e.event.method}`,
@@ -171,26 +242,26 @@ const DiffViewer: React.FC<DiffViewerProps> = ({ oldState, delta, newState }) =>
         const downwardMessages = _.get(newState, 'dmp.downwardMessageQueues')
         const horizontalMessages = _.get(newState, 'parachainSystem.hrmpOutboundMessages')
         return {
-          ...(upwardMessages?.length > 0 ? { UpwardMessages: upwardMessages } : {}),
+          ...(upwardMessages?.length ? { UpwardMessages: upwardMessages } : {}),
           ...(downwardMessages ? { DownwardMessages: downwardMessages } : {}),
-          ...(horizontalMessages?.length > 0 ? { HorizontalMessages: horizontalMessages } : {}),
+          ...(horizontalMessages?.length ? { HorizontalMessages: horizontalMessages } : {}),
           SystemEvents: events,
         }
       }
       default:
         throw new Error(`Unsupported view mode: ${viewMode}`)
     }
-  }, [oldState, delta, newState, viewMode])
+  }, [oldState, delta, newState, viewMode, eventsUseDelta])
 
   const viewPartial = useCallback((value: any) => {
     setPartial((partial) => (_.isEqual(partial, value) ? null : value))
   }, [])
 
-  function valueRenderer(viewPartial: any) {
+  function valueRenderer(viewPartial: any, deltaForIsDelta: any) {
     return (_raw: any, value: any, ...keys: any[]) => {
       const modifyPath = keys.reverse().join('.')
       const removePath = keys.map((x) => (Number.isInteger(Number.parseInt(x)) ? `_${x}` : x)).join('.')
-      const isDelta = _.has(delta, modifyPath) || _.has(delta, removePath)
+      const isDelta = _.has(deltaForIsDelta, modifyPath) || _.has(deltaForIsDelta, removePath)
 
       function renderSpan(name: string, body: any, raw?: any) {
         return (
@@ -198,37 +269,25 @@ const DiffViewer: React.FC<DiffViewerProps> = ({ oldState, delta, newState }) =>
             {body}
             {_.isObjectLike(raw) ? (
               <button type="button" onClick={() => viewPartial({ [modifyPath]: raw })}>
-                <img
-                  alt=""
-                  src="data:image/svg+xml;base64,PCFET0NUWVBFIHN2ZyBQVUJMSUMgIi0vL1czQy8vRFREIFNWRyAxLjEvL0VOIiAiaHR0cDovL3d3dy53My5vcmcvR3JhcGhpY3MvU1ZHLzEuMS9EVEQvc3ZnMTEuZHRkIj4KDTwhLS0gVXBsb2FkZWQgdG86IFNWRyBSZXBvLCB3d3cuc3ZncmVwby5jb20sIFRyYW5zZm9ybWVkIGJ5OiBTVkcgUmVwbyBNaXhlciBUb29scyAtLT4KPHN2ZyBmaWxsPSIjMDAwMDAwIiBoZWlnaHQ9IjY0cHgiIHdpZHRoPSI2NHB4IiB2ZXJzaW9uPSIxLjEiIGlkPSJMYXllcl8xIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbG5zOnhsaW5rPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5L3hsaW5rIiB2aWV3Qm94PSIwIDAgMjQyLjEzMyAyNDIuMTMzIiB4bWw6c3BhY2U9InByZXNlcnZlIiBzdHJva2U9IiMwMDAwMDAiPgoNPGcgaWQ9IlNWR1JlcG9fYmdDYXJyaWVyIiBzdHJva2Utd2lkdGg9IjAiLz4KDTxnIGlkPSJTVkdSZXBvX3RyYWNlckNhcnJpZXIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPgoNPGcgaWQ9IlNWR1JlcG9faWNvbkNhcnJpZXIiPiA8ZyBpZD0iWE1MSURfMjVfIj4gPHBhdGggaWQ9IlhNTElEXzI2XyIgZD0iTTg5LjI0NywxMzEuNjczbC00Ny43MzIsNDcuNzNsLTE1LjkwOS0xNS45MWMtNC4yOS00LjI5MS0xMC43NDItNS41NzItMTYuMzQ3LTMuMjUyIEMzLjY1NCwxNjIuNTYzLDAsMTY4LjAzMywwLDE3NC4xdjUzLjAzMmMwLDguMjg0LDYuNzE2LDE1LDE1LDE1bDUzLjAzMywwLjAwMWMwLjAwNy0wLjAwMSwwLjAxMi0wLjAwMSwwLjAxOSwwIGM4LjI4NSwwLDE1LTYuNzE2LDE1LTE1YzAtNC4zNzctMS44NzUtOC4zMTYtNC44NjUtMTEuMDU5bC0xNS40NTgtMTUuNDU4bDQ3LjczLTQ3LjcyOWM1Ljg1OC01Ljg1OCw1Ljg1OC0xNS4zNTUsMC0yMS4yMTMgQzEwNC42MDMsMTI1LjgxNSw5NS4xMDQsMTI1LjgxNiw4OS4yNDcsMTMxLjY3M3oiLz4gPHBhdGggaWQ9IlhNTElEXzI4XyIgZD0iTTIyNy4xMzMsMEgxNzQuMWMtNi4wNjcsMC0xMS41MzYsMy42NTUtMTMuODU4LDkuMjZjLTIuMzIxLDUuNjA1LTEuMDM4LDEyLjA1NywzLjI1MiwxNi4zNDdsMTUuOTExLDE1LjkxMSBsLTQ3LjcyOSw0Ny43M2MtNS44NTgsNS44NTgtNS44NTgsMTUuMzU1LDAsMjEuMjEzYzIuOTI5LDIuOTI5LDYuNzY4LDQuMzkzLDEwLjYwNiw0LjM5M2MzLjgzOSwwLDcuNjc4LTEuNDY0LDEwLjYwNi00LjM5NCBsNDcuNzMtNDcuNzNsMTUuOTA5LDE1LjkxYzIuODY5LDIuODcsNi43MDYsNC4zOTQsMTAuNjA5LDQuMzk0YzEuOTMzLDAsMy44ODItMC4zNzMsNS43MzctMS4xNDIgYzUuNjA1LTIuMzIyLDkuMjYtNy43OTIsOS4yNi0xMy44NThWMTVDMjQyLjEzMyw2LjcxNiwyMzUuNDE3LDAsMjI3LjEzMywweiIvPiA8L2c+IDwvZz4KDTwvc3ZnPg=="
-                />
+                <img alt="" src={spanButtonImage} />
               </button>
             ) : null}
           </DiffSpan>
         )
       }
 
-      function renderDelta(value: any) {
-        const looksLikeANumber = (x: any) => /^\d+(,\d+)*$/.test(x)
-        if (looksLikeANumber(value[0]) && looksLikeANumber(value[1])) {
-          const toBigInt = (x: any) => {
-            let oldValue: bigint
-            if (x.replace) {
-              oldValue = BigInt(x.replace(/,/g, ''))
-            } else {
-              // assume typeof x === "number"
-              oldValue = BigInt(x)
-            }
-            return oldValue
-          }
-          const oldValue = toBigInt(value[0])
-          const newValue = toBigInt(value[1])
-          if (oldValue > 0 && newValue > 0) {
-            const delta = newValue - oldValue
+      function renderDelta(v: any) {
+        const isNumLike = (x: any) => (typeof x === 'string' || typeof x === 'number') && /^\d+(,\d+)*$/.test(String(x))
+        if (Array.isArray(v) && v.length === 2 && isNumLike(v[0]) && isNumLike(v[1])) {
+          const toBigInt = (x: any) => (typeof x === 'string' ? BigInt(x.replace(/,/g, '')) : BigInt(x))
+          const oldValue = toBigInt(v[0])
+          const newValue = toBigInt(v[1])
+          if (oldValue > 0n && newValue > 0n) {
+            const d = newValue - oldValue
             return (
               <span className="delta">
-                {delta > 0 ? '+' : ''}
-                {delta.toLocaleString()}
+                {d > 0n ? '+' : ''}
+                {Number(d).toLocaleString()}
               </span>
             )
           }
@@ -258,6 +317,13 @@ const DiffViewer: React.FC<DiffViewerProps> = ({ oldState, delta, newState }) =>
       return <DiffWrapSpan>{renderSpan('unchanged', stringifyAndShrink(value), value)}</DiffWrapSpan>
     }
   }
+
+  const activeDeltaForRenderer =
+    viewMode === ViewMode.Changed
+      ? delta
+      : viewMode === ViewMode.Events && eventsUseDelta
+        ? data // the event-only delta object we just built
+        : delta // unused in non-delta rendering
 
   return (
     <div>
@@ -291,13 +357,26 @@ const DiffViewer: React.FC<DiffViewerProps> = ({ oldState, delta, newState }) =>
           />
           <label htmlFor="show_unchanged">Unchanged</label>
           {viewMode === ViewMode.Events ? (
-            <JSONTree theme={theme} invertTheme={true} data={data} shouldExpandNodeInitially={(_k, _d, l) => l <= 3} hideRoot />
+            eventsUseDelta ? (
+              <JSONTree
+                theme={theme}
+                invertTheme
+                data={data}
+                valueRenderer={valueRenderer(viewPartial, activeDeltaForRenderer)}
+                postprocessValue={prepareDelta}
+                isCustomNode={Array.isArray}
+                shouldExpandNodeInitially={(_k, _d, l) => l <= 3}
+                hideRoot
+              />
+            ) : (
+              <JSONTree theme={theme} invertTheme data={data} shouldExpandNodeInitially={(_k, _d, l) => l <= 3} hideRoot />
+            )
           ) : (
             <JSONTree
               theme={theme}
               invertTheme={true}
               data={data}
-              valueRenderer={valueRenderer(viewPartial)}
+              valueRenderer={valueRenderer(viewPartial, activeDeltaForRenderer)}
               postprocessValue={prepareDelta}
               isCustomNode={Array.isArray}
               shouldExpandNodeInitially={expandFirstLevel}

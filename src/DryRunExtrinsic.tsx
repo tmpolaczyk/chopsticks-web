@@ -739,7 +739,9 @@ const DryRunExtrinsic: React.FC<DryRunExtrinsicProps> = ({ api, endpoint, wasmOv
 
       <Divider />
 
-      {diffsByStep && selectedStepId && diffsByStep[selectedStepId] && <DiffViewer {...diffsByStep[selectedStepId]} />}
+      {diffsByStep && selectedStepId && diffsByStep[selectedStepId] && (
+        <DiffViewer {...diffsByStep[selectedStepId]} eventsUseDelta={true} />
+      )}
     </div>
   )
 }
