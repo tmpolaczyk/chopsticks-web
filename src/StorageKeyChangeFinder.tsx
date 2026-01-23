@@ -96,10 +96,24 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
   const [changes, setChanges] = useState<{ block: number; hex: string }[]>([])
   const [bigIntChanges, setBigIntChanges] = useState<BigIntLinearChange[]>([])
 
+  const [binaryWarnExpanded, setBinaryWarnExpanded] = useState(false)
+
+  // Binary-search ranges: default 0..latest (end=null means latest)
+  const [rangeStartBinary, setRangeStartBinary] = useState<number>(0)
+  const [rangeEndBinary, setRangeEndBinary] = useState<number | null>(null)
+
+  // Linear-scan ranges: default latest-100..latest (filled once when entering linear modes)
+  // Allow clearing -> null means "default" (start->0, end->latest at run time)
+  const [rangeStartLinear, setRangeStartLinear] = useState<number | null>(null)
+  const [rangeEndLinear, setRangeEndLinear] = useState<number | null>(null)
+
+  // Binary-search "latest" (auto-updating)
   const [latestBlockNumber, setLatestBlockNumber] = useState<number | null>(null)
   const [latestBlockLoading, setLatestBlockLoading] = useState(false)
 
-  const [binaryWarnExpanded, setBinaryWarnExpanded] = useState(false)
+  // Linear "latest snapshot" (does NOT auto-update; used for initial autofill + UI reference)
+  const [linearLatestSnapshot, setLinearLatestSnapshot] = useState<number | null>(null)
+  const [linearLatestLoading, setLinearLatestLoading] = useState(false)
 
   const didAutofillRangeRef = useRef(false)
   const rangeTouchedRef = useRef(false)
@@ -116,6 +130,7 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
     const run = async () => {
       if (!api) return
       setLatestBlockLoading(true)
+      setLinearLatestLoading(true)
       try {
         const head = await getHeadNumber(api)
         if (!cancelled) setLatestBlockNumber(head)
@@ -187,8 +202,10 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
     return rangeEnd !== null ? rangeEnd : latestBlockNumber
   }, [rangeEnd, latestBlockNumber])
 
+  const linearTooBigMaxBlocks = 1000
+
   const linearRangeStats = useMemo(() => {
-    const maxBlocks = 1000
+    const maxBlocks = linearTooBigMaxBlocks
     if (!isLinearMode)
       return { canCompute: false, span: null as number | null, blocks: null as number | null, tooBig: false, negative: false, maxBlocks }
 
@@ -366,13 +383,23 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
     }
   }, [mode, binaryWarnExpanded])
 
+  // ===== Derived ranges for current mode =====
+  const binaryStart = rangeStartBinary
+  const binaryEnd = rangeEndBinary // null means latest (helper should handle or we fetch inside)
+
+  const linearStartEffective = (rangeStartLinear ?? 0) as number
+  const linearEndEstimate = rangeEndLinear ?? linearLatestSnapshot // for warnings/UI only (actual end computed at run time)
+  const linearSpanEstimate = linearEndEstimate == null ? null : Math.max(0, linearEndEstimate - linearStartEffective)
+  const linearBlocksEstimate = linearSpanEstimate == null ? null : linearSpanEstimate + 1
+  const linearTooBigEstimate = linearSpanEstimate != null && linearSpanEstimate >= linearTooBigMaxBlocks
+
   const findLatestChange = useCallback(async () => {
     return performBinarySearchAndSetState({
       mode: 'change',
       api,
       storageKey,
-      rangeStart,
-      rangeEnd,
+      rangeStart: binaryStart,
+      rangeEnd: binaryEnd,
       setFinding,
       setSearchRange,
       setLowValueHex,
@@ -383,7 +410,7 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
       setFoundValueHex,
       setChanges,
     })
-  }, [api, storageKey, rangeStart, rangeEnd])
+  }, [api, storageKey, binaryStart, binaryEnd])
 
   const findFirstChange = useCallback(async () => {
     if (!validateHexKey(storageKey)) {
@@ -403,10 +430,10 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
 
     try {
       const head = await getHeadNumber(api)
-      setLatestBlockNumber(head)
+      if (isBinarySearchMode) setLatestBlockNumber(head)
 
-      const start = rangeStart
-      const end = rangeEnd !== null ? rangeEnd : head
+      const start = binaryStart
+      const end = binaryEnd !== null ? binaryEnd : head
 
       if (end <= start) {
         return message.error('Range end must be greater than range start')
@@ -456,15 +483,15 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
     } finally {
       setFinding(false)
     }
-  }, [api, storageKey, rangeStart, rangeEnd])
+  }, [api, storageKey, binaryStart, binaryEnd, isBinarySearchMode])
 
   const findNumber = useCallback(async () => {
     return performBinarySearchAndSetState({
       mode: 'number',
       api,
       storageKey,
-      rangeStart,
-      rangeEnd,
+      rangeStart: binaryStart,
+      rangeEnd: binaryEnd,
       targetNumber,
       setFinding,
       setSearchRange,
@@ -476,7 +503,7 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
       setFoundValueHex,
       setChanges,
     })
-  }, [api, storageKey, targetNumber, rangeStart, rangeEnd])
+  }, [api, storageKey, targetNumber, binaryStart, binaryEnd])
 
   // find all changes using recursive binary-walk
   const findAllChanges = useCallback(async () => {
@@ -484,8 +511,8 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
       mode: 'all',
       api,
       storageKey,
-      rangeStart,
-      rangeEnd,
+      rangeStart: binaryStart,
+      rangeEnd: binaryEnd,
       setFinding,
       setSearchRange,
       setLowValueHex,
@@ -496,7 +523,7 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
       setFoundValueHex,
       setChanges,
     })
-  }, [api, storageKey, rangeStart, rangeEnd])
+  }, [api, storageKey, binaryStart, binaryEnd])
 
   // Linear scan (sequential)
   const findLinearScan = useCallback(async () => {
@@ -507,11 +534,14 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
     setChanges([])
     setBigIntChanges([])
     try {
+      // Actual latest at run-time
       const head = await getHeadNumber(api)
-      setLatestBlockNumber(head)
 
-      const start = rangeStart
-      const end = rangeEnd !== null ? rangeEnd : head
+      const start = rangeStartLinear ?? 0
+      const end = rangeEndLinear ?? head
+
+      // Keep snapshot updated only when user runs linear, but DO NOT touch their input range
+      setLinearLatestSnapshot(head)
 
       let prev = await readVal(api, storageKey, start)
       const results: { block: number; hex: string }[] = []
@@ -530,7 +560,7 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
     } finally {
       setFinding(false)
     }
-  }, [api, storageKey, rangeStart, rangeEnd])
+  }, [api, storageKey, rangeStartLinear, rangeEndLinear])
 
   // Linear scan (bigint, sequential)
   const findLinearScanBigInt = useCallback(async () => {
@@ -542,10 +572,11 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
     setBigIntChanges([])
     try {
       const head = await getHeadNumber(api)
-      setLatestBlockNumber(head)
 
-      const start = rangeStart
-      const end = rangeEnd !== null ? rangeEnd : head
+      const start = rangeStartLinear ?? 0
+      const end = rangeEndLinear ?? head
+
+      setLinearLatestSnapshot(head)
 
       const first = await readVal(api, storageKey, start)
       let prevVal = decodeHexAsLeBigInt(first.hex)
@@ -574,7 +605,7 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
     } finally {
       setFinding(false)
     }
-  }, [api, storageKey, rangeStart, rangeEnd])
+  }, [api, storageKey, rangeStartLinear, rangeEndLinear])
 
   const onRun = useCallback(() => {
     switch (mode) {
@@ -607,6 +638,27 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
             : mode === 'linear'
               ? 'Linear Scan'
               : 'Linear Scan (bigint)'
+
+  const rangeStartValue = isLinearMode ? (rangeStartLinear ?? undefined) : rangeStartBinary
+  const rangeEndValue = isLinearMode ? (rangeEndLinear ?? undefined) : (rangeEndBinary ?? undefined)
+
+  const onChangeStart = (v: number | null) => {
+    if (isLinearMode) {
+      rangeTouchedRef.current = true
+      setRangeStartLinear(v)
+      return
+    }
+    setRangeStartBinary(typeof v === 'number' ? v : 0)
+  }
+
+  const onChangeEnd = (v: number | null) => {
+    if (isLinearMode) {
+      rangeTouchedRef.current = true
+      setRangeEndLinear(v)
+      return
+    }
+    setRangeEndBinary(typeof v === 'number' ? v : null)
+  }
 
   return (
     <Card>
@@ -674,40 +726,38 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
               </Space>
             }
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <div style={{ flex: 1 }}>
-                <Space.Compact style={{ width: '100%' }}>
-                  <InputNumber
-                    min={0}
-                    value={rangeStart}
-                    onChange={(v) => {
-                      rangeTouchedRef.current = true
-                      setRangeStart(typeof v === 'number' ? v : 0)
-                    }}
-                    style={{ width: '50%' }}
-                    placeholder="start (0)"
-                  />
-                  <InputNumber
-                    min={0}
-                    value={rangeEnd ?? undefined}
-                    onChange={(v) => {
-                      rangeTouchedRef.current = true
-                      setRangeEnd(typeof v === 'number' ? v : null)
-                    }}
-                    placeholder="end (latest)"
-                    style={{ width: '50%' }}
-                  />
-                </Space.Compact>
-              </div>
+            <Space.Compact style={{ width: '100%' }}>
+              <InputNumber
+                min={0}
+                value={rangeStartValue as any}
+                onChange={onChangeStart as any}
+                style={{ width: '50%' }}
+                placeholder={isLinearMode ? 'start (0)' : '0'}
+              />
+              <InputNumber
+                min={0}
+                value={rangeEndValue as any}
+                onChange={onChangeEnd as any}
+                style={{ width: '50%' }}
+                placeholder="end (latest)"
+              />
+            </Space.Compact>
 
-              <Space size={8} style={{ whiteSpace: 'nowrap' }}>
+            {isBinarySearchMode ? (
+              <Space size={8} style={{ whiteSpace: 'nowrap', marginTop: 8 }}>
                 <Typography.Text type="secondary">
-                  Latest: {latestBlockLoading ? '…' : latestBlockNumber != null ? `#${latestBlockNumber}` : '—'}
+                  Latest (live): {latestBlockLoading ? '…' : latestBlockNumber != null ? `#${latestBlockNumber}` : '—'}
                 </Typography.Text>
               </Space>
-            </div>
+            ) : (
+              <Space size={8} style={{ whiteSpace: 'nowrap', marginTop: 8 }}>
+                <Typography.Text type="secondary">
+                  Latest (snapshot): {linearLatestLoading ? '…' : linearLatestSnapshot != null ? `#${linearLatestSnapshot}` : '—'}
+                </Typography.Text>
+              </Space>
+            )}
 
-            {isLinearMode && linearRangeStats.canCompute && linearRangeStats.tooBig && (
+            {isLinearMode && linearTooBigEstimate && (
               <div style={{ marginTop: 10 }}>
                 <Alert
                   type="warning"
@@ -715,9 +765,8 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
                   message="Large linear scan range"
                   description={
                     <span>
-                      You’re about to scan <b>{linearRangeStats.blocks?.toLocaleString()}</b> blocks (more than {linearRangeStats.maxBlocks}
-                      ). This can be slow and may put load on the node/RPC. Consider narrowing the range or using a binary-search mode if
-                      the value is monotonic/unique.
+                      You’re about to scan <b>{linearBlocksEstimate?.toLocaleString()}</b> blocks (more than {linearTooBigMaxBlocks}). This
+                      can be slow and may put load on the node/RPC.
                     </span>
                   }
                 />
