@@ -1,6 +1,6 @@
 import type { ApiPromise } from '@polkadot/api'
-import { Button, Card, Col, Form, Input, InputNumber, Radio, Row, Select, Space, Typography, message } from 'antd'
-import React, { useState, useCallback, useEffect } from 'react'
+import { Alert, Button, Card, Col, Divider, Form, Input, InputNumber, Radio, Row, Select, Space, Tag, Typography, message } from 'antd'
+import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { BlockDate } from './BlockDate'
 import { performBinarySearchAndSetState } from './storage_binary_search'
 
@@ -24,6 +24,10 @@ type BigIntLinearChange = {
   prevValue: bigint
   value: bigint
   diff: bigint
+}
+
+const assertNever = (x: never): never => {
+  throw new Error(`Unhandled case: ${String(x)}`)
 }
 
 const validateHexKey = (key: string): boolean => /^0x[0-9a-fA-F]+$/.test(key)
@@ -77,6 +81,7 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
   const [storageKey, setStorageKey] = useState('')
   const [targetNumber, setTargetNumber] = useState('')
   const [finding, setFinding] = useState(false)
+
   const [searchRange, setSearchRange] = useState<[number, number] | null>(null)
   const [rangeStart, setRangeStart] = useState<number>(0)
   const [rangeEnd, setRangeEnd] = useState<number | null>(null)
@@ -87,11 +92,27 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
   const [prevValueHex, setPrevValueHex] = useState<string | null>(null)
   const [foundBlock, setFoundBlock] = useState<number | null>(null)
   const [foundValueHex, setFoundValueHex] = useState<string | null>(null)
+
   const [changes, setChanges] = useState<{ block: number; hex: string }[]>([])
   const [bigIntChanges, setBigIntChanges] = useState<BigIntLinearChange[]>([])
 
   const [latestBlockNumber, setLatestBlockNumber] = useState<number | null>(null)
   const [latestBlockLoading, setLatestBlockLoading] = useState(false)
+
+  const [binaryWarnExpanded, setBinaryWarnExpanded] = useState(false)
+
+  const refreshLatestBlock = useCallback(async () => {
+    if (!api) return
+    setLatestBlockLoading(true)
+    try {
+      const head = await getHeadNumber(api)
+      setLatestBlockNumber(head)
+    } catch {
+      setLatestBlockNumber(null)
+    } finally {
+      setLatestBlockLoading(false)
+    }
+  }, [api])
 
   useEffect(() => {
     let cancelled = false
@@ -113,6 +134,7 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
     }
   }, [api])
 
+  // Reset only result state when switching mode/key/target (keep the user's range inputs)
   useEffect(() => {
     // TODO: fix linter
     mode
@@ -127,9 +149,171 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
     setFoundValueHex(null)
     setChanges([])
     setBigIntChanges([])
-    setRangeStart(0)
-    setRangeEnd(null)
   }, [mode, storageKey, targetNumber])
+
+  const isBinarySearchMode = mode === 'change' || mode === 'first' || mode === 'number' || mode === 'all'
+
+  const modeDetails = useMemo(() => {
+    const commonWarn = (
+      <Alert
+        type="warning"
+        showIcon
+        message={
+          <Space size={8} wrap>
+            <Typography.Text strong>Binary-search limitation</Typography.Text>
+            <Typography.Text type="secondary">May miss changes if values repeat or oscillate.</Typography.Text>
+            <Typography.Link onClick={() => setBinaryWarnExpanded((v) => !v)}>
+              {binaryWarnExpanded ? 'Hide details' : 'Show details'}
+            </Typography.Link>
+          </Space>
+        }
+        description={
+          binaryWarnExpanded ? (
+            <div>
+              <Typography.Paragraph style={{ marginBottom: 8 }}>
+                Binary search can <b>miss change points</b> when values can repeat or oscillate (e.g. <code>A → B → A</code>). It’s only
+                reliable when the value is:
+              </Typography.Paragraph>
+
+              <ul style={{ margin: 0, paddingLeft: 20 }}>
+                <li>
+                  <b>Unique / non-repeating</b>: every block has a different value (injective across the range).
+                </li>
+                <li style={{ marginTop: 8 }}>
+                  <b>Monotonic non-decreasing</b>: only goes up or stays the same (never decreases).
+                </li>
+                <li style={{ marginTop: 8 }}>
+                  <b>Monotonic non-increasing</b>: only goes down or stays the same (never increases).
+                </li>
+              </ul>
+
+              <Divider style={{ margin: '12px 0' }} />
+
+              <Typography.Text strong>Good examples (safe for binary search)</Typography.Text>
+              <ul style={{ margin: '6px 0 0', paddingLeft: 20 }}>
+                <li>
+                  <b>Session index</b>: increasing — <code>0, 0, 1, 1, 2...</code>
+                </li>
+                <li>
+                  <b>Block hash / state root</b>: unique — <code>0xaaa…, 0xbbb…, 0xccc…</code>
+                </li>
+                <li>
+                  <b>Account nonce</b>: non-decreasing — <code>5, 6, 7, 7, 8...</code>
+                </li>
+                <li>
+                  <b>Block number</b>: increasing — <code>100, 101, 102, ...</code>
+                </li>
+              </ul>
+
+              <Typography.Text strong style={{ display: 'block', marginTop: 10 }}>
+                Bad examples (can fool binary search)
+              </Typography.Text>
+              <ul style={{ margin: '6px 0 0', paddingLeft: 20 }}>
+                <li>
+                  <b>Account balance</b>: can go up/down — <code>100, 90, 110...</code>
+                </li>
+                <li>
+                  <b>Block weight / gas used</b>: can repeat — <code>80%, 75%, 80%...</code>
+                </li>
+                <li>
+                  <b>Total issuance</b>: can decrease (burns/slashes) — <code>1_000, 995, 1_005...</code>
+                </li>
+                <li>
+                  <b>List of validators / inactive validators</b>: can change back and forth — <code>[A, B], [A], [A, B]...</code> (won't
+                  find the change to [A])
+                </li>
+                <li>
+                  <b>Parachain manager account / sudo key</b>: can change back and forth — <code>0xaa, 0xbb, 0xaa...</code>
+                </li>
+              </ul>
+
+              <Divider style={{ margin: '12px 0' }} />
+              <Typography.Text type="secondary">
+                If you’re unsure the value is unique/monotonic, prefer <b>Linear Scan</b> for correctness. But make sure to specify a small
+                block range (~100 blocks) or the search will be very slow.
+              </Typography.Text>
+            </div>
+          ) : undefined
+        }
+      />
+    )
+
+    switch (mode) {
+      case 'change':
+        return {
+          title: 'Latest Change',
+          tag: <Tag color="gold">Binary search</Tag>,
+          description: (
+            <Typography.Paragraph style={{ marginBottom: 0 }}>
+              Finds the <b>last</b> block in the range where the storage value changed (fast).
+            </Typography.Paragraph>
+          ),
+          warning: commonWarn,
+        }
+      case 'first':
+        return {
+          title: 'First Change',
+          tag: <Tag color="gold">Binary search</Tag>,
+          description: (
+            <Typography.Paragraph style={{ marginBottom: 0 }}>
+              Finds the <b>first</b> block in the range where the storage value changed from the value at <code>rangeStart</code>.
+            </Typography.Paragraph>
+          ),
+          warning: commonWarn,
+        }
+      case 'number':
+        return {
+          title: 'By Number',
+          tag: <Tag color="gold">Binary search</Tag>,
+          description: (
+            <Typography.Paragraph style={{ marginBottom: 0 }}>
+              Uses a numeric comparator to search for a block matching the provided target value (fast). (Assumes fixed-width SCALE integer
+              encoding, won't work for Compact encoding)
+            </Typography.Paragraph>
+          ),
+          warning: commonWarn,
+        }
+      case 'all':
+        return {
+          title: 'All Changes',
+          tag: <Tag color="gold">Binary search</Tag>,
+          description: (
+            <Typography.Paragraph style={{ marginBottom: 0 }}>
+              Recursively splits the range to find <b>change points</b>. Much faster than linear scan on large ranges, but has the same
+              binary-search assumptions.
+            </Typography.Paragraph>
+          ),
+          warning: commonWarn,
+        }
+      case 'linear':
+        return {
+          title: 'Linear Scan',
+          tag: <Tag color="green">Accurate</Tag>,
+          description: (
+            <Typography.Paragraph style={{ marginBottom: 0 }}>
+              Scans blocks sequentially and records every time the raw storage hex changes. <b>Always correct</b>, but <b>very slow</b> and{' '}
+              <b>expensive</b> on the RPC.
+            </Typography.Paragraph>
+          ),
+          warning: null,
+        }
+      case 'linear_bigint':
+        return {
+          title: 'Linear Scan (bigint)',
+          tag: <Tag color="green">Accurate</Tag>,
+          description: (
+            <Typography.Paragraph style={{ marginBottom: 0 }}>
+              Same as Linear Scan, but also decodes the value as a <b>bigint</b> (unsigned little-endian integer) and shows the <b>delta</b>{' '}
+              (next − prev) for each change. (Assumes fixed-width SCALE integer encoding, won't work for Compact encoding)
+              <b>Very slow</b> and <b>expensive</b> on the RPC.
+            </Typography.Paragraph>
+          ),
+          warning: null,
+        }
+      default:
+        assertNever(mode)
+    }
+  }, [mode, binaryWarnExpanded])
 
   const findLatestChange = useCallback(async () => {
     return performBinarySearchAndSetState({
@@ -168,6 +352,8 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
 
     try {
       const head = await getHeadNumber(api)
+      setLatestBlockNumber(head)
+
       const start = rangeStart
       const end = rangeEnd !== null ? rangeEnd : head
 
@@ -271,16 +457,19 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
     setBigIntChanges([])
     try {
       const head = await getHeadNumber(api)
+      setLatestBlockNumber(head)
+
       const start = rangeStart
       const end = rangeEnd !== null ? rangeEnd : head
 
       let prev = await readVal(api, storageKey, start)
       const results: { block: number; hex: string }[] = []
+
       for (let b = start + 1; b <= end; b++) {
         const curr = await readVal(api, storageKey, b)
         if (curr.hex !== prev.hex) {
           results.push(curr)
-          setChanges([...results].sort((a, b) => b.block - a.block))
+          setChanges([...results].sort((a, b2) => b2.block - a.block))
           prev = curr
         }
       }
@@ -302,6 +491,8 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
     setBigIntChanges([])
     try {
       const head = await getHeadNumber(api)
+      setLatestBlockNumber(head)
+
       const start = rangeStart
       const end = rangeEnd !== null ? rangeEnd : head
 
@@ -322,7 +513,7 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
             diff: currVal - prevVal,
           }
           results.push(entry)
-          setBigIntChanges([...results].sort((a, b) => b.block - a.block))
+          setBigIntChanges([...results].sort((a, b2) => b2.block - a.block))
           prevVal = currVal
         }
       }
@@ -334,10 +525,46 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
     }
   }, [api, storageKey, rangeStart, rangeEnd])
 
+  const onRun = useCallback(() => {
+    switch (mode) {
+      case 'change':
+        return findLatestChange()
+      case 'first':
+        return findFirstChange()
+      case 'number':
+        return findNumber()
+      case 'all':
+        return findAllChanges()
+      case 'linear':
+        return findLinearScan()
+      case 'linear_bigint':
+        return findLinearScanBigInt()
+      default:
+        return assertNever(mode)
+    }
+  }, [mode, findLatestChange, findFirstChange, findNumber, findAllChanges, findLinearScan, findLinearScanBigInt])
+
+  const runLabel =
+    mode === 'change'
+      ? 'Find Latest Change'
+      : mode === 'first'
+        ? 'Find First Change'
+        : mode === 'number'
+          ? 'Find Closest Value'
+          : mode === 'all'
+            ? 'Find All Changes'
+            : mode === 'linear'
+              ? 'Linear Scan'
+              : 'Linear Scan (bigint)'
+
   return (
     <Card>
-      <Space direction="vertical" style={{ width: '100%' }}>
-        <Form.Item label="Suggested Keys">
+      <Space direction="vertical" style={{ width: '100%' }} size={16}>
+        <Typography.Title level={4} style={{ margin: 0 }}>
+          Storage Key Change Finder
+        </Typography.Title>
+
+        <Form.Item label="Suggested Keys" style={{ marginBottom: 0 }}>
           <Select
             placeholder="Select a key"
             showSearch
@@ -357,42 +584,85 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
           </Select>
         </Form.Item>
 
-        <Radio.Group value={mode} onChange={(e) => setMode(e.target.value)}>
-          <Radio.Button value="change">Latest Change</Radio.Button>
-          <Radio.Button value="first">First Change</Radio.Button>
-          <Radio.Button value="number">By Number</Radio.Button>
-          <Radio.Button value="all">All Changes</Radio.Button>
-          <Radio.Button value="linear">Linear Scan</Radio.Button>
-          <Radio.Button value="linear_bigint">Linear Scan (bigint)</Radio.Button>
-        </Radio.Group>
+        <div>
+          <Typography.Text strong style={{ display: 'block', marginBottom: 8 }}>
+            Mode
+          </Typography.Text>
+          <Radio.Group value={mode} onChange={(e) => setMode(e.target.value)}>
+            <Radio.Button value="change">Latest Change</Radio.Button>
+            <Radio.Button value="first">First Change</Radio.Button>
+            <Radio.Button value="number">By Number</Radio.Button>
+            <Radio.Button value="all">All Changes</Radio.Button>
+            <Radio.Button value="linear">Linear Scan</Radio.Button>
+            <Radio.Button value="linear_bigint">Linear Scan (bigint)</Radio.Button>
+          </Radio.Group>
 
-        {/* Compact block range */}
+          <div style={{ marginTop: 12 }}>
+            <Card size="small" style={{ background: '#fafafa' }}>
+              <Space direction="vertical" style={{ width: '100%' }} size={8}>
+                <Space size={8} wrap>
+                  <Typography.Text strong>{modeDetails.title}</Typography.Text>
+                  {modeDetails.tag}
+                  {isBinarySearchMode ? <Tag color="orange">May miss changes</Tag> : <Tag color="green">No missed changes</Tag>}
+                </Space>
+                {modeDetails.description}
+                {modeDetails.warning}
+              </Space>
+            </Card>
+          </div>
+        </div>
+
+        <Divider style={{ margin: '8px 0' }} />
+
         <Form layout="vertical">
-          <Form.Item label="Block Range">
+          <Form.Item
+            label={
+              <Space size={8}>
+                <span>Block Range</span>
+                <Typography.Text type="secondary">(tip: leave end empty to scan until latest)</Typography.Text>
+              </Space>
+            }
+          >
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <div style={{ flex: 1 }}>
                 <Space.Compact style={{ width: '100%' }}>
-                  <InputNumber min={0} value={rangeStart} onChange={(v) => setRangeStart(v ?? 0)} style={{ width: '50%' }} />
+                  <InputNumber
+                    min={0}
+                    value={rangeStart}
+                    onChange={(v) => setRangeStart(typeof v === 'number' ? v : 0)}
+                    style={{ width: '50%' }}
+                    placeholder="start"
+                  />
                   <InputNumber
                     min={0}
                     value={rangeEnd ?? undefined}
-                    onChange={(v) => setRangeEnd(v !== undefined ? v : null)}
-                    placeholder="latest"
+                    onChange={(v) => setRangeEnd(typeof v === 'number' ? v : null)}
+                    placeholder="end (latest)"
                     style={{ width: '50%' }}
                   />
                 </Space.Compact>
               </div>
 
-              <Typography.Text type="secondary" style={{ whiteSpace: 'nowrap' }}>
-                Latest: {latestBlockLoading ? '…' : latestBlockNumber != null ? `#${latestBlockNumber}` : '—'}
-              </Typography.Text>
+              <Space size={8} style={{ whiteSpace: 'nowrap' }}>
+                <Typography.Text type="secondary">
+                  Latest: {latestBlockLoading ? '…' : latestBlockNumber != null ? `#${latestBlockNumber}` : '—'}
+                </Typography.Text>
+                <Button size="small" onClick={refreshLatestBlock} disabled={!api} loading={latestBlockLoading}>
+                  Refresh
+                </Button>
+              </Space>
             </div>
           </Form.Item>
 
           <Row gutter={16}>
             <Col span={24}>
               <Form.Item label="Storage Key (hex)">
-                <Input value={storageKey} onChange={(e) => setStorageKey(e.target.value.trim())} />
+                <Input
+                  value={storageKey}
+                  onChange={(e) => setStorageKey(e.target.value.trim())}
+                  placeholder="0x..."
+                  style={{ fontFamily: 'monospace' }}
+                />
               </Form.Item>
             </Col>
           </Row>
@@ -401,7 +671,12 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
             <Row gutter={16}>
               <Col span={24}>
                 <Form.Item label="Target Value">
-                  <Input value={targetNumber} onChange={(e) => setTargetNumber(e.target.value.trim())} />
+                  <Input
+                    value={targetNumber}
+                    onChange={(e) => setTargetNumber(e.target.value.trim())}
+                    placeholder="e.g. 12345 (format depends on comparator in your binary search helper)"
+                    style={{ fontFamily: 'monospace' }}
+                  />
                 </Form.Item>
               </Col>
             </Row>
@@ -410,94 +685,100 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
           {searchRange && !foundBlock && mode !== 'all' && mode !== 'linear' && mode !== 'linear_bigint' && (
             <>
               <Form.Item label={`Searching low #${searchRange[0]}`}>
-                <Input value={lowValueHex || ''} readOnly />
+                <Input value={lowValueHex || ''} readOnly style={{ fontFamily: 'monospace' }} />
               </Form.Item>
               <Form.Item label={`Searching high #${searchRange[1]}`}>
-                <Input value={highValueHex || ''} readOnly />
+                <Input value={highValueHex || ''} readOnly style={{ fontFamily: 'monospace' }} />
               </Form.Item>
             </>
           )}
 
           {mode !== 'all' && mode !== 'linear' && mode !== 'linear_bigint' && prevBlock != null && prevValueHex && (
-            <Form.Item label={`Previous at #${prevBlock}`}>
-              <Input value={prevValueHex} readOnly />
-            </Form.Item>
+            <Card size="small" style={{ marginBottom: 12 }}>
+              <Space direction="vertical" style={{ width: '100%' }} size={8}>
+                <Typography.Text strong>Previous</Typography.Text>
+                <Typography.Text type="secondary">Block #{prevBlock}</Typography.Text>
+                <Input value={prevValueHex} readOnly style={{ fontFamily: 'monospace' }} />
+              </Space>
+            </Card>
           )}
 
           {mode !== 'all' && mode !== 'linear' && mode !== 'linear_bigint' && foundBlock != null && foundValueHex && (
-            <Form.Item label={`Found at #${foundBlock}`}>
-              <Input value={foundValueHex} readOnly />
-              <Typography.Text>Block date:</Typography.Text>
-              <BlockDate api={api} blockNumber={foundBlock} />
-            </Form.Item>
+            <Card size="small" style={{ marginBottom: 12 }}>
+              <Space direction="vertical" style={{ width: '100%' }} size={8}>
+                <Typography.Text strong>Found</Typography.Text>
+                <Typography.Text type="secondary">Block #{foundBlock}</Typography.Text>
+                <Input value={foundValueHex} readOnly style={{ fontFamily: 'monospace' }} />
+                <Typography.Text>Block date:</Typography.Text>
+                <BlockDate api={api} blockNumber={foundBlock} />
+              </Space>
+            </Card>
           )}
 
-          {mode === 'all' &&
-            changes.length > 0 &&
-            changes.map((c) => (
-              <Form.Item label={`Change at #${c.block}`} key={c.block}>
-                <Input value={c.hex} readOnly />
-                <Typography.Text>Block date:</Typography.Text>
-                <BlockDate api={api} blockNumber={c.block} />
-              </Form.Item>
-            ))}
+          {(mode === 'all' || mode === 'linear') && changes.length > 0 && (
+            <>
+              <Divider style={{ margin: '12px 0' }} />
+              <Typography.Text strong style={{ display: 'block', marginBottom: 8 }}>
+                Changes ({changes.length})
+              </Typography.Text>
 
-          {mode === 'linear' &&
-            changes.length > 0 &&
-            changes.map((c) => (
-              <Form.Item label={`Change at #${c.block}`} key={c.block}>
-                <Input value={c.hex} readOnly />
-                <Typography.Text>Block date:</Typography.Text>
-                <BlockDate api={api} blockNumber={c.block} />
-              </Form.Item>
-            ))}
+              {changes.map((c) => (
+                <Card key={c.block} size="small" style={{ marginBottom: 10 }}>
+                  <Space direction="vertical" style={{ width: '100%' }} size={8}>
+                    <Typography.Text strong>Change at #{c.block}</Typography.Text>
+                    <Input value={c.hex} readOnly style={{ fontFamily: 'monospace' }} />
+                    <Typography.Text>Block date:</Typography.Text>
+                    <BlockDate api={api} blockNumber={c.block} />
+                  </Space>
+                </Card>
+              ))}
+            </>
+          )}
 
-          {mode === 'linear_bigint' &&
-            bigIntChanges.length > 0 &&
-            bigIntChanges.map((c) => (
-              <Form.Item label={`Change at #${c.block}`} key={c.block}>
-                <Space direction="vertical" style={{ width: '100%' }}>
-                  <Input value={c.hex} readOnly />
-                  <Input addonBefore="Prev" value={c.prevValue.toString()} readOnly />
-                  <Input addonBefore="Next" value={c.value.toString()} readOnly />
-                  <Input addonBefore="Δ" value={c.diff.toString()} readOnly />
-                  <Typography.Text>Block date:</Typography.Text>
-                  <BlockDate api={api} blockNumber={c.block} />
-                </Space>
-              </Form.Item>
-            ))}
+          {mode === 'linear_bigint' && bigIntChanges.length > 0 && (
+            <>
+              <Divider style={{ margin: '12px 0' }} />
+              <Typography.Text strong style={{ display: 'block', marginBottom: 8 }}>
+                Changes ({bigIntChanges.length})
+              </Typography.Text>
 
-          <Form.Item>
+              {bigIntChanges.map((c) => (
+                <Card key={c.block} size="small" style={{ marginBottom: 10 }}>
+                  <Space direction="vertical" style={{ width: '100%' }} size={8}>
+                    <Typography.Text strong>Change at #{c.block}</Typography.Text>
+                    <Input value={c.hex} readOnly style={{ fontFamily: 'monospace' }} />
+                    <Space direction="vertical" style={{ width: '100%' }} size={6}>
+                      <Input addonBefore="Prev" value={c.prevValue.toString()} readOnly style={{ fontFamily: 'monospace' }} />
+                      <Input addonBefore="Next" value={c.value.toString()} readOnly style={{ fontFamily: 'monospace' }} />
+                      <Input addonBefore="Δ" value={c.diff.toString()} readOnly style={{ fontFamily: 'monospace' }} />
+                    </Space>
+                    <Typography.Text>Block date:</Typography.Text>
+                    <BlockDate api={api} blockNumber={c.block} />
+                  </Space>
+                </Card>
+              ))}
+            </>
+          )}
+
+          {isBinarySearchMode && (changes.length > 0 || bigIntChanges.length > 0) && (
+            <Alert
+              style={{ marginTop: 12 }}
+              type="info"
+              showIcon
+              message="Tip"
+              description="For binary-search modes, consider narrowing the block range around where you expect the change to avoid false 'no change' outcomes when values repeat."
+            />
+          )}
+
+          <Form.Item style={{ marginTop: 12 }}>
             <Button
               type="primary"
-              onClick={
-                mode === 'change'
-                  ? findLatestChange
-                  : mode === 'first'
-                    ? findFirstChange
-                    : mode === 'number'
-                      ? findNumber
-                      : mode === 'all'
-                        ? findAllChanges
-                        : mode === 'linear'
-                          ? findLinearScan
-                          : findLinearScanBigInt
-              }
+              onClick={onRun}
               loading={finding}
               block
               disabled={!api || !storageKey || (mode === 'number' && !targetNumber)}
             >
-              {mode === 'change'
-                ? 'Find Latest Change'
-                : mode === 'first'
-                  ? 'Find First Change'
-                  : mode === 'number'
-                    ? 'Find Closest Value'
-                    : mode === 'all'
-                      ? 'Find All Changes'
-                      : mode === 'linear'
-                        ? 'Linear Scan'
-                        : 'Linear Scan (bigint)'}
+              {runLabel}
             </Button>
           </Form.Item>
         </Form>
