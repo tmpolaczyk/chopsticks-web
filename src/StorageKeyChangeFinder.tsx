@@ -11,11 +11,19 @@ export type StorageKeyChangeFinderProps = {
 
 // ========= Helper types & functions =========
 
-type Mode = 'change' | 'number' | 'all' | 'linear'
+type Mode = 'change' | 'number' | 'all' | 'linear' | 'linear_bigint'
 
 interface ValObj {
   block: number
   hex: string
+}
+
+type BigIntLinearChange = {
+  block: number
+  hex: string
+  prevValue: bigint
+  value: bigint
+  diff: bigint
 }
 
 const validateHexKey = (key: string): boolean => /^0x[0-9a-fA-F]+$/.test(key)
@@ -32,6 +40,26 @@ const readStorageHexAt = async (api: ApiPromise, storageKey: string, block: numb
 
 const readVal = async (api: ApiPromise, storageKey: string, block: number): Promise<ValObj> => {
   return { block, hex: await readStorageHexAt(api, storageKey, block) }
+}
+
+/**
+ * Decode a storage hex value as an unsigned little-endian integer (BigInt).
+ * This matches SCALE encoding for fixed-width primitive integers (u32/u64/u128/...),
+ * which are stored little-endian. (If the value is compact-encoded, this won't match.)
+ */
+const decodeHexAsLeBigInt = (hex: string): bigint => {
+  if (!hex || hex === '0x') return 0n
+  let h = hex.startsWith('0x') ? hex.slice(2) : hex
+  if (h.length === 0) return 0n
+  if (h.length % 2 !== 0) h = `0${h}`
+
+  let out = 0n
+  // Little-endian: first byte is least-significant
+  for (let i = 0; i < h.length; i += 2) {
+    const byte = BigInt(Number.parseInt(h.slice(i, i + 2), 16))
+    out += byte << (8n * BigInt(i / 2))
+  }
+  return out
 }
 
 // Suggested keys configuration
@@ -60,6 +88,7 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
   const [foundBlock, setFoundBlock] = useState<number | null>(null)
   const [foundValueHex, setFoundValueHex] = useState<string | null>(null)
   const [changes, setChanges] = useState<{ block: number; hex: string }[]>([])
+  const [bigIntChanges, setBigIntChanges] = useState<BigIntLinearChange[]>([])
 
   useEffect(() => {
     // TODO: fix linter
@@ -74,6 +103,7 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
     setFoundBlock(null)
     setFoundValueHex(null)
     setChanges([])
+    setBigIntChanges([])
     setRangeStart(0)
     setRangeEnd(null)
   }, [mode, storageKey, targetNumber])
@@ -144,6 +174,7 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
     }
     setFinding(true)
     setChanges([])
+    setBigIntChanges([])
     try {
       const head = await getHeadNumber(api)
       const start = rangeStart
@@ -160,6 +191,54 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
         }
       }
       setChanges(results)
+    } catch (err: any) {
+      message.error(err.message || err.toString())
+    } finally {
+      setFinding(false)
+    }
+  }, [api, storageKey, rangeStart, rangeEnd])
+
+  // Linear scan (bigint, sequential)
+  const findLinearScanBigInt = useCallback(async () => {
+    if (!validateHexKey(storageKey)) {
+      return message.error('Enter a valid hex storage key')
+    }
+    setFinding(true)
+    setChanges([])
+    setBigIntChanges([])
+    try {
+      const head = await getHeadNumber(api)
+      const start = rangeStart
+      const end = rangeEnd !== null ? rangeEnd : head
+
+      const first = await readVal(api, storageKey, start)
+      let prevHex = first.hex
+      let prevVal = decodeHexAsLeBigInt(prevHex)
+
+      const results: BigIntLinearChange[] = []
+      for (let b = start + 1; b <= end; b++) {
+        const curr = await readVal(api, storageKey, b)
+        const currVal = decodeHexAsLeBigInt(curr.hex)
+
+        if (currVal !== prevVal) {
+          const entry: BigIntLinearChange = {
+            block: curr.block,
+            hex: curr.hex,
+            prevValue: prevVal,
+            value: currVal,
+            diff: currVal - prevVal,
+          }
+          results.push(entry)
+          setBigIntChanges([...results].sort((a, b) => b.block - a.block))
+
+          prevHex = curr.hex
+          prevVal = currVal
+        } else {
+          // Keep prevHex in case you ever want to compare raw differences too; currently value-based.
+          prevHex = curr.hex
+        }
+      }
+      setBigIntChanges(results)
     } catch (err: any) {
       message.error(err.message || err.toString())
     } finally {
@@ -195,6 +274,7 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
           <Radio.Button value="number">By Number</Radio.Button>
           <Radio.Button value="all">All Changes</Radio.Button>
           <Radio.Button value="linear">Linear Scan</Radio.Button>
+          <Radio.Button value="linear_bigint">Linear Scan (bigint)</Radio.Button>
         </Radio.Group>
 
         {/* Compact block range */}
@@ -230,7 +310,7 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
             </Row>
           )}
 
-          {searchRange && !foundBlock && mode !== 'all' && (
+          {searchRange && !foundBlock && mode !== 'all' && mode !== 'linear' && mode !== 'linear_bigint' && (
             <>
               <Form.Item label={`Searching low #${searchRange[0]}`}>
                 <Input value={lowValueHex || ''} readOnly />
@@ -241,13 +321,13 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
             </>
           )}
 
-          {mode !== 'all' && prevBlock != null && prevValueHex && (
+          {mode !== 'all' && mode !== 'linear' && mode !== 'linear_bigint' && prevBlock != null && prevValueHex && (
             <Form.Item label={`Previous at #${prevBlock}`}>
               <Input value={prevValueHex} readOnly />
             </Form.Item>
           )}
 
-          {mode !== 'all' && foundBlock != null && foundValueHex && (
+          {mode !== 'all' && mode !== 'linear' && mode !== 'linear_bigint' && foundBlock != null && foundValueHex && (
             <Form.Item label={`Found at #${foundBlock}`}>
               <Input value={foundValueHex} readOnly />
               <Typography.Text>Block date:</Typography.Text>
@@ -275,10 +355,35 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
               </Form.Item>
             ))}
 
+          {mode === 'linear_bigint' &&
+            bigIntChanges.length > 0 &&
+            bigIntChanges.map((c) => (
+              <Form.Item label={`Change at #${c.block}`} key={c.block}>
+                <Space direction="vertical" style={{ width: '100%' }}>
+                  <Input value={c.hex} readOnly />
+                  <Input addonBefore="Prev" value={c.prevValue.toString()} readOnly />
+                  <Input addonBefore="Next" value={c.value.toString()} readOnly />
+                  <Input addonBefore="Δ" value={c.diff.toString()} readOnly />
+                  <Typography.Text>Block date:</Typography.Text>
+                  <BlockDate api={api} blockNumber={c.block} />
+                </Space>
+              </Form.Item>
+            ))}
+
           <Form.Item>
             <Button
               type="primary"
-              onClick={mode === 'change' ? findChange : mode === 'number' ? findNumber : mode === 'all' ? findAllChanges : findLinearScan}
+              onClick={
+                mode === 'change'
+                  ? findChange
+                  : mode === 'number'
+                    ? findNumber
+                    : mode === 'all'
+                      ? findAllChanges
+                      : mode === 'linear'
+                        ? findLinearScan
+                        : findLinearScanBigInt
+              }
               loading={finding}
               block
               disabled={!api || !storageKey || (mode === 'number' && !targetNumber)}
@@ -289,7 +394,9 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
                   ? 'Find Closest Value'
                   : mode === 'all'
                     ? 'Find All Changes'
-                    : 'Linear Scan'}
+                    : mode === 'linear'
+                      ? 'Linear Scan'
+                      : 'Linear Scan (bigint)'}
             </Button>
           </Form.Item>
         </Form>
