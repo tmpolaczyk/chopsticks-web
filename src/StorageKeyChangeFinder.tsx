@@ -1,6 +1,6 @@
 import type { ApiPromise } from '@polkadot/api'
 import { Alert, Button, Card, Col, Divider, Form, Input, InputNumber, Radio, Row, Select, Space, Tag, Typography, message } from 'antd'
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { BlockDate } from './BlockDate'
 import { performBinarySearchAndSetState } from './storage_binary_search'
 
@@ -101,16 +101,34 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
 
   const [binaryWarnExpanded, setBinaryWarnExpanded] = useState(false)
 
-  const refreshLatestBlock = useCallback(async () => {
-    if (!api) return
-    setLatestBlockLoading(true)
-    try {
-      const head = await getHeadNumber(api)
-      setLatestBlockNumber(head)
-    } catch {
-      setLatestBlockNumber(null)
-    } finally {
-      setLatestBlockLoading(false)
+  const didAutofillRangeRef = useRef(false)
+  const rangeTouchedRef = useRef(false)
+
+  const isBinarySearchMode = mode === 'change' || mode === 'first' || mode === 'number' || mode === 'all'
+  const isLinearMode = mode === 'linear' || mode === 'linear_bigint'
+
+  // Fetch latest once on mount / api change (no subscriptions; won't update every block)
+  useEffect(() => {
+    didAutofillRangeRef.current = false
+    rangeTouchedRef.current = false
+
+    let cancelled = false
+    const run = async () => {
+      if (!api) return
+      setLatestBlockLoading(true)
+      try {
+        const head = await getHeadNumber(api)
+        if (!cancelled) setLatestBlockNumber(head)
+      } catch {
+        if (!cancelled) setLatestBlockNumber(null)
+      } finally {
+        if (!cancelled) setLatestBlockLoading(false)
+      }
+    }
+
+    run()
+    return () => {
+      cancelled = true
     }
   }, [api])
 
@@ -134,6 +152,19 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
     }
   }, [api])
 
+  // Autofill initial range to [latest-100, latest] exactly once (and only if user hasn't touched it)
+  useEffect(() => {
+    if (latestBlockNumber == null) return
+    if (didAutofillRangeRef.current) return
+    if (rangeTouchedRef.current) return
+
+    const end = latestBlockNumber
+    const start = Math.max(0, end - 100)
+    setRangeStart(start)
+    setRangeEnd(end)
+    didAutofillRangeRef.current = true
+  }, [latestBlockNumber])
+
   // Reset only result state when switching mode/key/target (keep the user's range inputs)
   useEffect(() => {
     // TODO: fix linter
@@ -151,7 +182,27 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
     setBigIntChanges([])
   }, [mode, storageKey, targetNumber])
 
-  const isBinarySearchMode = mode === 'change' || mode === 'first' || mode === 'number' || mode === 'all'
+  const effectiveEndForUI = useMemo(() => {
+    // If end is empty, treat it as "latest" for UI hints (based on currently known latest).
+    return rangeEnd !== null ? rangeEnd : latestBlockNumber
+  }, [rangeEnd, latestBlockNumber])
+
+  const linearRangeStats = useMemo(() => {
+    const maxBlocks = 1000
+    if (!isLinearMode)
+      return { canCompute: false, span: null as number | null, blocks: null as number | null, tooBig: false, negative: false, maxBlocks }
+
+    const end = effectiveEndForUI
+    if (end == null)
+      return { canCompute: false, span: null as number | null, blocks: null as number | null, tooBig: false, negative: false, maxBlocks }
+
+    const start = rangeStart
+    const span = end - start // difference
+    const blocks = span + 1 // inclusive count
+    const tooBig = span >= maxBlocks
+    const negative = span <= 0
+    return { canCompute: true, span, blocks, tooBig, negative, maxBlocks }
+  }, [isLinearMode, effectiveEndForUI, rangeStart])
 
   const modeDetails = useMemo(() => {
     const commonWarn = (
@@ -617,9 +668,9 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
         <Form layout="vertical">
           <Form.Item
             label={
-              <Space size={8}>
+              <Space size={8} wrap>
                 <span>Block Range</span>
-                <Typography.Text type="secondary">(tip: leave end empty to scan until latest)</Typography.Text>
+                <Typography.Text type="secondary">(start defaults to 0 if empty; end defaults to latest if empty)</Typography.Text>
               </Space>
             }
           >
@@ -629,14 +680,20 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
                   <InputNumber
                     min={0}
                     value={rangeStart}
-                    onChange={(v) => setRangeStart(typeof v === 'number' ? v : 0)}
+                    onChange={(v) => {
+                      rangeTouchedRef.current = true
+                      setRangeStart(typeof v === 'number' ? v : 0)
+                    }}
                     style={{ width: '50%' }}
-                    placeholder="start"
+                    placeholder="start (0)"
                   />
                   <InputNumber
                     min={0}
                     value={rangeEnd ?? undefined}
-                    onChange={(v) => setRangeEnd(typeof v === 'number' ? v : null)}
+                    onChange={(v) => {
+                      rangeTouchedRef.current = true
+                      setRangeEnd(typeof v === 'number' ? v : null)
+                    }}
                     placeholder="end (latest)"
                     style={{ width: '50%' }}
                   />
@@ -647,11 +704,25 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
                 <Typography.Text type="secondary">
                   Latest: {latestBlockLoading ? '…' : latestBlockNumber != null ? `#${latestBlockNumber}` : '—'}
                 </Typography.Text>
-                <Button size="small" onClick={refreshLatestBlock} disabled={!api} loading={latestBlockLoading}>
-                  Refresh
-                </Button>
               </Space>
             </div>
+
+            {isLinearMode && linearRangeStats.canCompute && linearRangeStats.tooBig && (
+              <div style={{ marginTop: 10 }}>
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="Large linear scan range"
+                  description={
+                    <span>
+                      You’re about to scan <b>{linearRangeStats.blocks?.toLocaleString()}</b> blocks (more than {linearRangeStats.maxBlocks}
+                      ). This can be slow and may put load on the node/RPC. Consider narrowing the range or using a binary-search mode if
+                      the value is monotonic/unique.
+                    </span>
+                  }
+                />
+              </div>
+            )}
           </Form.Item>
 
           <Row gutter={16}>
@@ -758,16 +829,6 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
                 </Card>
               ))}
             </>
-          )}
-
-          {isBinarySearchMode && (changes.length > 0 || bigIntChanges.length > 0) && (
-            <Alert
-              style={{ marginTop: 12 }}
-              type="info"
-              showIcon
-              message="Tip"
-              description="For binary-search modes, consider narrowing the block range around where you expect the change to avoid false 'no change' outcomes when values repeat."
-            />
           )}
 
           <Form.Item style={{ marginTop: 12 }}>
