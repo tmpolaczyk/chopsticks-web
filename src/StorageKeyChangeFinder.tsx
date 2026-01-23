@@ -11,7 +11,7 @@ export type StorageKeyChangeFinderProps = {
 
 // ========= Helper types & functions =========
 
-type Mode = 'change' | 'number' | 'all' | 'linear' | 'linear_bigint'
+type Mode = 'change' | 'first' | 'number' | 'all' | 'linear' | 'linear_bigint'
 
 interface ValObj {
   block: number
@@ -131,7 +131,7 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
     setRangeEnd(null)
   }, [mode, storageKey, targetNumber])
 
-  const findChange = useCallback(async () => {
+  const findLatestChange = useCallback(async () => {
     return performBinarySearchAndSetState({
       mode: 'change',
       api,
@@ -148,6 +148,77 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
       setFoundValueHex,
       setChanges,
     })
+  }, [api, storageKey, rangeStart, rangeEnd])
+
+  const findFirstChange = useCallback(async () => {
+    if (!validateHexKey(storageKey)) {
+      return message.error('Enter a valid hex storage key')
+    }
+
+    setFinding(true)
+    setSearchRange(null)
+    setLowValueHex(null)
+    setHighValueHex(null)
+    setPrevBlock(null)
+    setPrevValueHex(null)
+    setFoundBlock(null)
+    setFoundValueHex(null)
+    setChanges([])
+    setBigIntChanges([])
+
+    try {
+      const head = await getHeadNumber(api)
+      const start = rangeStart
+      const end = rangeEnd !== null ? rangeEnd : head
+
+      if (end <= start) {
+        return message.error('Range end must be greater than range start')
+      }
+
+      // We assume the value stays at "low" until the first change, like the latest-change binary search does.
+      // (If the value changes and later returns to the initial value, this mode may miss the earlier change.)
+      let low = start
+      let high = end
+
+      let lowHex = await readStorageHexAt(api, storageKey, low)
+      let highHex = await readStorageHexAt(api, storageKey, high)
+
+      setSearchRange([low, high])
+      setLowValueHex(lowHex)
+      setHighValueHex(highHex)
+
+      if (lowHex === highHex) {
+        message.info('No change found in the selected range')
+        return
+      }
+
+      while (high - low > 1) {
+        const mid = Math.floor((low + high) / 2)
+        const midHex = await readStorageHexAt(api, storageKey, mid)
+
+        // Update UI to show the narrowing bounds
+        setSearchRange([low, high])
+        setLowValueHex(lowHex)
+        setHighValueHex(highHex)
+
+        if (midHex === lowHex) {
+          low = mid
+          lowHex = midHex
+        } else {
+          high = mid
+          highHex = midHex
+        }
+      }
+
+      setPrevBlock(low)
+      setPrevValueHex(lowHex)
+      setFoundBlock(high)
+      setFoundValueHex(highHex)
+    } catch (err: any) {
+      message.error(err.message || err.toString())
+    } finally {
+      setFinding(false)
+    }
   }, [api, storageKey, rangeStart, rangeEnd])
 
   const findNumber = useCallback(async () => {
@@ -287,7 +358,8 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
         </Form.Item>
 
         <Radio.Group value={mode} onChange={(e) => setMode(e.target.value)}>
-          <Radio.Button value="change">Last Change</Radio.Button>
+          <Radio.Button value="change">Latest Change</Radio.Button>
+          <Radio.Button value="first">First Change</Radio.Button>
           <Radio.Button value="number">By Number</Radio.Button>
           <Radio.Button value="all">All Changes</Radio.Button>
           <Radio.Button value="linear">Linear Scan</Radio.Button>
@@ -400,28 +472,32 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
               type="primary"
               onClick={
                 mode === 'change'
-                  ? findChange
-                  : mode === 'number'
-                    ? findNumber
-                    : mode === 'all'
-                      ? findAllChanges
-                      : mode === 'linear'
-                        ? findLinearScan
-                        : findLinearScanBigInt
+                  ? findLatestChange
+                  : mode === 'first'
+                    ? findFirstChange
+                    : mode === 'number'
+                      ? findNumber
+                      : mode === 'all'
+                        ? findAllChanges
+                        : mode === 'linear'
+                          ? findLinearScan
+                          : findLinearScanBigInt
               }
               loading={finding}
               block
               disabled={!api || !storageKey || (mode === 'number' && !targetNumber)}
             >
               {mode === 'change'
-                ? 'Find Last Change'
-                : mode === 'number'
-                  ? 'Find Closest Value'
-                  : mode === 'all'
-                    ? 'Find All Changes'
-                    : mode === 'linear'
-                      ? 'Linear Scan'
-                      : 'Linear Scan (bigint)'}
+                ? 'Find Latest Change'
+                : mode === 'first'
+                  ? 'Find First Change'
+                  : mode === 'number'
+                    ? 'Find Closest Value'
+                    : mode === 'all'
+                      ? 'Find All Changes'
+                      : mode === 'linear'
+                        ? 'Linear Scan'
+                        : 'Linear Scan (bigint)'}
             </Button>
           </Form.Item>
         </Form>
