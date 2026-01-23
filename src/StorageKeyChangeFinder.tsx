@@ -90,6 +90,29 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
   const [changes, setChanges] = useState<{ block: number; hex: string }[]>([])
   const [bigIntChanges, setBigIntChanges] = useState<BigIntLinearChange[]>([])
 
+  const [latestBlockNumber, setLatestBlockNumber] = useState<number | null>(null)
+  const [latestBlockLoading, setLatestBlockLoading] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    const run = async () => {
+      if (!api) return
+      setLatestBlockLoading(true)
+      try {
+        const head = await getHeadNumber(api)
+        if (!cancelled) setLatestBlockNumber(head)
+      } catch {
+        if (!cancelled) setLatestBlockNumber(null)
+      } finally {
+        if (!cancelled) setLatestBlockLoading(false)
+      }
+    }
+    run()
+    return () => {
+      cancelled = true
+    }
+  }, [api])
+
   useEffect(() => {
     // TODO: fix linter
     mode
@@ -212,8 +235,7 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
       const end = rangeEnd !== null ? rangeEnd : head
 
       const first = await readVal(api, storageKey, start)
-      let prevHex = first.hex
-      let prevVal = decodeHexAsLeBigInt(prevHex)
+      let prevVal = decodeHexAsLeBigInt(first.hex)
 
       const results: BigIntLinearChange[] = []
       for (let b = start + 1; b <= end; b++) {
@@ -230,12 +252,7 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
           }
           results.push(entry)
           setBigIntChanges([...results].sort((a, b) => b.block - a.block))
-
-          prevHex = curr.hex
           prevVal = currVal
-        } else {
-          // Keep prevHex in case you ever want to compare raw differences too; currently value-based.
-          prevHex = curr.hex
         }
       }
       setBigIntChanges(results)
@@ -280,16 +297,24 @@ const StorageKeyChangeFinder: React.FC<StorageKeyChangeFinderProps> = ({ api }) 
         {/* Compact block range */}
         <Form layout="vertical">
           <Form.Item label="Block Range">
-            <Space.Compact>
-              <InputNumber min={0} value={rangeStart} onChange={(v) => setRangeStart(v ?? 0)} style={{ width: '50%' }} />
-              <InputNumber
-                min={0}
-                value={rangeEnd ?? undefined}
-                onChange={(v) => setRangeEnd(v !== undefined ? v : null)}
-                placeholder="latest"
-                style={{ width: '50%' }}
-              />
-            </Space.Compact>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={{ flex: 1 }}>
+                <Space.Compact style={{ width: '100%' }}>
+                  <InputNumber min={0} value={rangeStart} onChange={(v) => setRangeStart(v ?? 0)} style={{ width: '50%' }} />
+                  <InputNumber
+                    min={0}
+                    value={rangeEnd ?? undefined}
+                    onChange={(v) => setRangeEnd(v !== undefined ? v : null)}
+                    placeholder="latest"
+                    style={{ width: '50%' }}
+                  />
+                </Space.Compact>
+              </div>
+
+              <Typography.Text type="secondary" style={{ whiteSpace: 'nowrap' }}>
+                Latest: {latestBlockLoading ? '…' : latestBlockNumber != null ? `#${latestBlockNumber}` : '—'}
+              </Typography.Text>
+            </div>
           </Form.Item>
 
           <Row gutter={16}>
